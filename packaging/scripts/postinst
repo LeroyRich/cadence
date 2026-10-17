@@ -1,0 +1,31 @@
+#!/bin/sh
+set -eu
+PACKAGE=/var/packages/Cadence
+STATE="$PACKAGE/var"
+TARGET="$PACKAGE/target"
+PYTHON=
+PYTHON_VERSION=0
+for candidate in /var/packages/Python3.14/target/usr/bin/python3.14 /usr/local/bin/python3.14 /var/packages/Python3.13/target/usr/bin/python3.13 /usr/local/bin/python3.13 /var/packages/Python3.12/target/usr/bin/python3.12 /usr/local/bin/python3.12 /var/packages/Python3.11/target/usr/bin/python3.11 /usr/local/bin/python3.11 /var/packages/Python3.10/target/usr/bin/python3.10 /usr/local/bin/python3.10 /var/packages/Python3.9/target/usr/bin/python3.9 /usr/local/bin/python3.9 /var/packages/py3k/target/usr/local/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
+    if [ -x "$candidate" ] && "$candidate" -c 'import sys; sys.exit(sys.version_info < (3, 8))' 2>/dev/null; then
+        candidate_version=$("$candidate" -c 'import sys; print(sys.version_info.major * 100 + sys.version_info.minor)')
+        if [ "$candidate_version" -gt "$PYTHON_VERSION" ]; then
+            PYTHON=$candidate
+            PYTHON_VERSION=$candidate_version
+        fi
+    fi
+done
+if [ -z "$PYTHON" ]; then
+    echo "Cadence requires a working Python 3.8 or newer interpreter" >&2
+    exit 1
+fi
+umask 077
+if [ ! -d "$STATE" ]; then mkdir -p "$STATE"; fi
+if [ -z "${wizard_password:-}" ]; then
+    if [ "${SYNOPKG_PKG_STATUS:-}" = "UPGRADE" ] && [ -s "$STATE/library.sqlite3" ]; then
+        exit 0
+    fi
+    echo "Cadence administrator password was not provided" >&2
+    exit 1
+fi
+printf '%s' "$wizard_password" | PYTHONPATH="$TARGET/vendor:$TARGET" "$PYTHON" -m tagger.server --state-dir "$STATE" --password-stdin
+exit 0

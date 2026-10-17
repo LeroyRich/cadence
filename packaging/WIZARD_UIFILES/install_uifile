@@ -1,0 +1,1 @@
+[{"step_title":"Cadence administrator access","items":[{"type":"password","desc":"Choose a separate password for the Cadence web interface.","subitems":[{"key":"wizard_password","desc":"Administrator password","validator":{"allowBlank":false,"minLength":12}}]}]}]

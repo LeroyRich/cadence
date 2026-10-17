@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cadence — NAS Music Tagger</title>
+  <link rel="stylesheet" href="/app.css">
+  <link rel="stylesheet" href="/library.css">
+  <script defer src="/genres.js"></script>
+  <script defer src="/app.js"></script>
+</head>
+<body>
+  <div id="login" class="login-screen hidden">
+    <form id="login-form" class="login-card">
+      <div class="logo-mark">◈</div>
+      <p class="eyebrow">YOUR MUSIC, IN ORDER</p>
+      <h1>Cadence</h1>
+      <p>Sign in to your NAS music workspace.</p>
+      <label for="password">Administrator password</label>
+      <input id="password" type="password" autocomplete="current-password" required>
+      <label class="remember-option" for="remember-me">
+        <input id="remember-me" type="checkbox">
+        <span><strong>Remember me</strong><small>Stay signed in on this device for 30 days.</small></span>
+      </label>
+      <button class="primary wide" type="submit">Open library <span>→</span></button>
+      <p id="login-error" class="error-text" role="alert"></p>
+    </form>
+  </div>
+
+  <div id="app" class="app hidden">
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-symbol">◈</span><span>Cadence</span></div>
+      <div class="brand-sub">NAS MUSIC TAGGER</div>
+      <nav class="nav" aria-label="Main navigation">
+        <button class="nav-item active" data-view="library"><span>▦</span> Library</button>
+        <button class="nav-item" data-view="activity"><span>◴</span> Activity</button>
+        <button class="nav-item" data-view="settings"><span>⚙</span> Settings</button>
+      </nav>
+      <div class="side-section">
+        <div class="side-heading"><span>LIBRARY FOLDERS</span><button id="add-folder" class="icon-button" title="Add folder" aria-label="Add folder">+</button></div>
+        <div id="folder-list" class="folder-list"></div>
+      </div>
+      <div class="side-bottom"><span class="status-dot"></span> Editing locally on your NAS</div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="top-title"><span class="eyebrow">YOUR COLLECTION</span><h1 id="page-title">Library</h1></div>
+        <div class="top-actions"><button id="scan-button" class="secondary">↻ <span>Scan folders</span></button><button id="logout-button" class="icon-button" title="Sign out" aria-label="Sign out">⇥</button></div>
+      </header>
+
+      <section id="library-view" class="view">
+        <div class="intro-row"><div class="count-card"><strong id="track-count">0</strong><span id="indexed-label">TRACKS INDEXED</span></div></div>
+        <div class="toolbar"><div class="search-box"><span>⌕</span><input id="search" type="search" placeholder="Search titles, artists, albums or paths" aria-label="Search library"></div><select id="root-filter" aria-label="Filter library"><option value="">All libraries</option></select></div>
+        <p id="genre-scan-hint" class="warning hidden">Genre support has been upgraded. Run Scan folders once to refresh all genre filters and suggestions. Opening an editor refreshes its selected tracks automatically.</p>
+        <p id="folder-scan-status" class="warning hidden" role="status"></p>
+        <div class="library-controls">
+          <div class="selection-bar"><div class="selection-summary"><span id="select-list-tooltip" class="select-list-tooltip" tabindex="-1"><button id="select-list" class="secondary" disabled>Select entire list</button></span><div class="filter-pair"><select id="track-filter" aria-label="Filter tracks"><option value="all">All tracks</option>
+              <hr>
+              <option value="missing_artist">Missing artist</option>
+              <option value="missing_album">Missing album</option>
+              <option value="missing_title">Missing title</option>
+              <option value="missing_track">Missing track number</option>
+              <option value="missing_year">Missing year</option>
+              <option value="missing_genre">Missing genre</option>
+              <option value="no_artwork">Missing embedded artwork</option>
+              <option value="invalid_characters">Invalid characters in tags</option>
+              <hr>
+              <option value="genre_search">Genre search</option>
+              <option value="genre_review">Genre needs review</option>
+              <hr>
+              <option value="uppercase_title">Track titles all uppercase</option>
+              <option value="lowercase_title">Track titles all lowercase</option>
+              <hr>
+              <option value="no_album_folder">Files in the root of artist folder</option><option value="empty_folders">Empty folders</option></select><div id="genre-pattern" class="genre-picker hidden"><select id="genre-filter" aria-label="Choose genre" disabled><option value="">Choose a genre</option></select></div></div></div><div class="selection-actions"><button id="edit-selected" class="secondary" disabled>Edit selection</button><button id="process-queue" class="primary" disabled>Process queue (0) <span>→</span></button></div></div>
+          <div class="selection-status"><div class="selection-status-left"><strong id="selected-count" aria-live="polite">0 selected</strong><span class="pagination-separator" aria-hidden="true">|</span><div class="page-summary"><label for="page-size-top">Show</label><select id="page-size-top" aria-label="Tracks per page (top)"><option value="100" selected>100</option><option value="250">250</option><option value="500">500</option><option value="1000">1000</option></select><span id="range-label-top">0–0</span></div><span id="filter-hint"></span></div><div class="selection-status-right"><button id="previous-page-top" class="icon-button" aria-label="Previous page" disabled>←</button><select id="page-jump-top" class="page-jump" aria-label="Jump to page (top)" disabled><option>No pages</option></select><button id="next-page-top" class="icon-button" aria-label="Next page" disabled>→</button><button id="configure-columns" class="secondary" type="button">Columns</button></div></div>
+        </div>
+        <div class="table-wrap"><table id="library-table"><thead><tr><th class="check-col"><input id="select-page" type="checkbox" aria-label="Select visible tracks"></th><th aria-sort="none"><button class="sort-button" data-sort="title">TITLE / FILE <span class="sort-indicator" aria-hidden="true">↕</span></button></th><th class="path-col" aria-sort="none"><button class="sort-button" data-sort="path">PATH <span class="sort-indicator" aria-hidden="true">↕</span></button></th><th aria-sort="none"><button class="sort-button" data-sort="artist">ARTIST <span class="sort-indicator" aria-hidden="true">↕</span></button></th><th aria-sort="none"><button class="sort-button" data-sort="album">ALBUM <span class="sort-indicator" aria-hidden="true">↕</span></button></th><th aria-sort="none"><button class="sort-button" data-sort="track">TRACK <span class="sort-indicator" aria-hidden="true">↕</span></button></th><th aria-sort="none"><button class="sort-button" data-sort="disc">DISC <span class="sort-indicator" aria-hidden="true">↕</span></button></th><th aria-sort="none"><button class="sort-button" data-sort="format">FORMAT <span class="sort-indicator" aria-hidden="true">↕</span></button></th><th class="duration-col" aria-sort="none"><button class="sort-button" data-sort="duration">LENGTH <span class="sort-indicator" aria-hidden="true">↕</span></button></th></tr></thead><tbody id="track-rows"></tbody></table><div id="empty-state" class="empty-state hidden"><div>♫</div><h3>No tracks here yet</h3><p>Add a folder and scan it, or change your search.</p><button id="empty-add" class="secondary">Add a folder</button></div></div>
+        <div class="pagination"><div class="page-summary"><label for="page-size">Show</label><select id="page-size" aria-label="Tracks per page"><option value="100" selected>100</option><option value="250">250</option><option value="500">500</option><option value="1000">1000</option></select><span id="range-label">0–0</span></div><div><button id="previous-page" class="icon-button" aria-label="Previous page" disabled>←</button><select id="page-jump" class="page-jump" aria-label="Jump to page" disabled><option>No pages</option></select><button id="next-page" class="icon-button" aria-label="Next page" disabled>→</button></div></div>
+      </section>
+
+      <section id="activity-view" class="view hidden"><div class="section-heading activity-heading"><button id="clear-completed-jobs" class="secondary" disabled>Clear Completed Jobs</button></div><div class="activity-grid"><div class="panel"><h3>Jobs</h3><div id="jobs-list"></div></div></div></section>
+
+      <section id="settings-view" class="view hidden">
+        <form id="settings-form" class="settings-panel panel">
+          <h3>Metadata services</h3><label for="contact-email">MusicBrainz contact email</label><p>Required by MusicBrainz to identify API requests.</p><input id="contact-email" type="email" placeholder="you@example.com"><label for="acoustid-key">AcoustID application key</label><p>Enables audio fingerprint matching when fpcalc is installed.</p><input id="acoustid-key" type="password" autocomplete="off" placeholder="Leave blank to keep current key">
+          <h3>Library refresh</h3><label class="confirmation-setting" for="daily-scan-setting"><input id="daily-scan-setting" type="checkbox" aria-describedby="daily-scan-help">Refresh library every day at 3:00 a.m.</label><p id="daily-scan-help">Uses the NAS local time zone and the normal background scan queue. Disabled by default.</p>
+          <h3>Genre compatibility</h3><label class="confirmation-setting" for="auto-id3-upgrade-setting"><input id="auto-id3-upgrade-setting" type="checkbox" checked aria-describedby="auto-id3-upgrade-help">Automatically allow ID3v2.4 upgrades</label><p id="auto-id3-upgrade-help">Enabled by default. When on, the genre editor's upgrade permission is checked and locked. Turn this off to choose permission for each edit. The disk-write review shows every required upgrade.</p>
+          <h3>Commit safety</h3><label class="confirmation-setting" for="confirm-commit-setting"><input id="confirm-commit-setting" type="checkbox" checked aria-describedby="confirm-commit-help">Ask for final confirmation before committing</label><p id="confirm-commit-help">Enabled by default. When disabled, Commit to disk starts the job directly from the proposed-changes review. The review and Cancel all changes confirmation remain enabled. Disk changes cannot be undone in Cadence.</p><button type="submit" class="primary">Save settings</button>
+        </form>
+        <div class="settings-secondary">
+        <form id="password-form" class="settings-panel panel"><h3>Change password</h3><p>Changing your password signs out every Cadence session.</p><label for="current-password">Current password</label><input id="current-password" type="password" autocomplete="current-password" required><label for="new-password">New password</label><input id="new-password" type="password" autocomplete="new-password" minlength="12" maxlength="256" required><label for="repeat-password">Confirm new password</label><input id="repeat-password" type="password" autocomplete="new-password" minlength="12" maxlength="256" required><button type="submit" class="primary">Change password</button></form>
+        <div class="panel formats-panel"><h3>Supported formats</h3><p>MP3 · FLAC · M4A/M4B · Ogg Vorbis · Opus · WAV · AIFF · WMA/ASF</p><p>Embedded cover replacement is available except for WMA/ASF. WAV and AIFF tags may not display in every player.</p></div>
+        </div>
+      </section>
+    </main>
+
+    <aside id="inspector" class="inspector hidden" aria-label="Tag editor">
+      <div id="inspector-resize" class="inspector-resize" role="separator" tabindex="0" aria-label="Resize edit pane" aria-orientation="vertical" aria-controls="inspector" title="Drag to resize edit pane · Arrow keys for fine adjustment"></div>
+      <div class="inspector-head"><div><span class="eyebrow">STAGED CHANGES</span><h2 id="inspector-title">Edit metadata</h2></div><button id="close-inspector" class="icon-button" aria-label="Close editor">×</button></div>
+      <div class="inspector-scroll"><div id="inspector-summary" class="inspector-summary"></div>
+        <div id="edit-fields" class="editor-sections">
+          <fieldset id="metadata-fields" class="editor-sections">
+          <div id="artist-fields" class="editor-plain"></div>
+          <section class="editor-group" aria-labelledby="album-heading"><h3 id="album-heading">Album</h3>
+            <div class="cover-card"><div id="cover-preview" class="cover-placeholder">♫</div><div><strong>Album artwork</strong><span id="artwork-status" role="status"></span><span>Replacement: JPEG or PNG, up to 10 MB</span><label class="file-button">Choose image<input id="artwork-input" type="file" accept="image/jpeg,image/png" hidden></label></div></div>
+            <div class="artwork-url-row"><input id="artwork-url" type="url" placeholder="Paste image URL" aria-label="Artwork image URL" autocomplete="url"><button id="fetch-artwork" class="secondary" type="button">Use URL</button></div>
+            <div id="album-fields" class="field-grid"></div>
+          </section>
+          <section class="editor-group" aria-labelledby="title-heading"><h3 id="title-heading">Track</h3><div id="title-fields" class="field-grid"></div><div id="track-preview" class="track-preview hidden"><strong>Preview track</strong><audio id="preview-audio" controls preload="none">Your browser cannot play this audio format.</audio><span>Playback streams from your NAS. Browser format support varies.</span></div></section>
+          <section class="editor-group" aria-labelledby="genres-heading"><h3 id="genres-heading">Genres</h3><div id="genre-fields"></div></section>
+          <div id="comment-fields" class="editor-plain"></div>
+          <div class="metadata-tools"><button id="match-text" class="secondary">⌕ Find metadata</button><button id="match-fingerprint" class="secondary">♫ Identify audio</button><div id="candidate-list"></div></div>
+          </fieldset>
+          <section class="editor-group editor-organization" aria-labelledby="organization-heading"><h3 id="organization-heading">File &amp; Folder Organization</h3>
+            <fieldset id="organization-fields">
+            <div class="organize-control"><label for="organize-mode">Organize folders</label><select id="organize-mode"><option value="none">Keep files where they are</option><option value="artist">Artist / file</option><option value="artist_album">Artist / Album (Year) / file</option><option value="album_in_artist">Album (Year) inside existing artist folder</option></select></div>
+            <div class="organize-control"><label for="rename-mode">Rename files from tags</label><select id="rename-mode"><option value="none">Keep current filenames</option><option value="title">Title</option><option value="track_title">Track number - Title</option><option value="artist_title">Artist - Title</option><option value="artist_album_track_title">Artist - Album - 00 - Title</option></select></div>
+            <div class="organize-control"><label for="import-tags">Import tags from filename</label><select id="import-tags" aria-describedby="import-tags-help"><option value="none">Do not import tags</option><option value="title">Title</option><option value="track_title">Track number - Title</option><option value="artist_title">Artist - Title</option><option value="artist_album_track_title">Artist - Album - 00 - Title</option></select><small id="import-tags-help">Uses the current filename, without its extension. Imported fields replace existing or staged values; other tags stay unchanged. Title cleanup runs afterward. Use “ - ” between fields; artist and album names cannot contain that separator. Review results before committing.</small></div>
+            </fieldset>
+            <div class="organize-control"><label id="delete-label" for="delete-mode">Delete files</label><select id="delete-mode" aria-describedby="delete-help"><option value="keep">Do not delete file(s)</option><option value="delete">Delete file(s)</option></select><small id="delete-help">Deletion is permanent and happens only after review and commit.</small></div>
+          </section>
+        </div>
+        <div id="inspector-path" class="inspector-path hidden"><strong>File path</strong><span></span></div>
+      </div>
+      <div class="inspector-footer"><div class="editor-actions"><button id="add-to-queue" class="secondary">Add to queue</button><button id="save-changes" class="primary">Save changes <span>→</span></button></div></div>
+    </aside>
+  </div>
+
+  <div id="modal-backdrop" class="modal-backdrop hidden"><div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><div class="modal-header"><div><span class="eyebrow" id="modal-eyebrow">REVIEW</span><h2 id="modal-title">Review changes</h2></div><div class="modal-header-actions"><button id="cancel-all" class="text-button danger hidden">Cancel all changes</button><button id="modal-close" class="icon-button" aria-label="Close">×</button></div></div><div id="modal-body" class="modal-body"></div><div id="modal-actions" class="modal-actions"></div></div></div>
+  <div id="toast" class="toast hidden" role="status"></div>
+</body>
+</html>

@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+BACKUPS=/var/packages/Cadence/var/backups
+if [ -e "$BACKUPS" ] || [ -L "$BACKUPS" ]; then
+    rm -rf "$BACKUPS"
+fi
+exit 0

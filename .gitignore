@@ -1,0 +1,16 @@
+# Build outputs (reproducible with build_spk.sh)
+*.spk
+build/
+dist/
+*.tgz
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local/runtime state
+.env
+*.log
+.DS_Store
