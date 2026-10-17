@@ -80,7 +80,7 @@ On a Linux build computer with Python 3 and pip:
 sh build_spk.sh
 ```
 
-The script creates `Cadence-0.1.0-0054.spk`. A prebuilt copy is included alongside this source. Build 0054 matches the view dropdown height to the other toolbar fields. It includes metadata Tag search and Albums, Artists, Genres, Decades, and Years views with whole-group editing from build 0053. For an offline rebuild, set `MUTAGEN_SOURCE` to a directory containing `mutagen/` and `mutagen-1.47.0.dist-info/`.
+The script creates `Cadence-0.1.0-0054.spk`. Builds are published as release assets rather than committed to this repository, so the current one is attached to the [0.1.0 build 0054 release](https://github.com/LeroyRich/cadence/releases/tag/v0.1.0-0054) (`Cadence-0.1.0-0054.spk`, 245,760 bytes, SHA-256 `215752d07680ecba7074117187cb95ed5453e077b12e493434111942a0efdfbc`). Build 0054 matches the view dropdown height to the other toolbar fields. It includes metadata Tag search and Albums, Artists, Genres, Decades, and Years views with whole-group editing from build 0053. For an offline rebuild, set `MUTAGEN_SOURCE` to a directory containing `mutagen/` and `mutagen-1.47.0.dist-info/`.
 
 ## Install on DSM
 
