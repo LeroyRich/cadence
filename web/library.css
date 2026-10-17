@@ -171,7 +171,7 @@ table {
   white-space: nowrap;
 }
 
-.genre-picker {
+.tag-picker {
   display: flex;
   min-width: 0;
 }
@@ -187,11 +187,12 @@ table {
 }
 
 .toolbar #root-filter,
+.toolbar #library-view-select,
 .selection-bar button {
   height: 43px;
 }
 
-.genre-picker #genre-filter {
+.tag-picker #tag-field {
   width: 270px;
 }
 
@@ -920,7 +921,7 @@ table {
     white-space: normal;
   }
 
-  .genre-picker {
+  .tag-picker {
     flex: 0 1 270px;
   }
 }
@@ -1280,4 +1281,9 @@ table {
 .login-card .remember-option small { color: #8fa4a4; font-weight: 400; line-height: 1.4; }
 @media (prefers-color-scheme: light) {
   .login-card .remember-option small { color: #61776e; }
+}
+
+.toolbar #library-view-select { flex: 0 0 auto; min-width: 115px; }
+@media (max-width: 720px) {
+  .toolbar #library-view-select { flex: 1 1 110px; }
 }

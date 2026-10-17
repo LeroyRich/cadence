@@ -16,6 +16,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from .deletion import DeletionMixin
+from .groups import GroupMixin, contains, tag_matches
 from .formats import EXTENSIONS, FIELDS, apply_tags, id3_genre_frame, read_file, inspect_artwork
 from .genres import (apply_genre_options, clean_genres, genre_needs_review, genre_values,
                      normalize_edits, validate_genre_options, validate_genres)
@@ -137,7 +138,7 @@ def tags_from_filename(path, pattern):
     return tags
 
 
-class Library(DeletionMixin):
+class Library(DeletionMixin, GroupMixin):
     operation_error = LibraryError
 
     def __init__(self, state_dir, allowed_volume=None, resume_jobs=True):
@@ -255,6 +256,7 @@ class Library(DeletionMixin):
         with self._db() as db:
             for column in ("sort_title", "sort_artist", "sort_album", "sort_path", "format", "duration"):
                 db.execute("CREATE INDEX IF NOT EXISTS tracks_sort_{} ON tracks({})".format(column, column))
+            self._init_groups(db)
         if resume_jobs:
             self._launch_next_job()
 
@@ -265,6 +267,9 @@ class Library(DeletionMixin):
             connection.row_factory = sqlite3.Row
             connection.create_function("cadence_tag_flags", 1, lambda tags: tag_filter_flags(json.loads(tags)))
             connection.create_function("cadence_tag_number", 2, tag_number)
+            connection.create_function("cadence_contains", 2, contains)
+            connection.create_function("cadence_casefold", 1, lambda value: str(value or "").casefold())
+            connection.create_function("cadence_tag_matches", 3, tag_matches)
             with connection:
                 yield connection
         finally:
@@ -386,6 +391,7 @@ class Library(DeletionMixin):
         db.execute("DELETE FROM track_genres WHERE path=?", (str(path),))
         db.executemany("INSERT INTO track_genres VALUES (?,?,?)",
                        [(str(path), genre, genre.casefold()) for genre in clean_genres(details["tags"].get("genre"))])
+        self._index_groups(db, path, details["tags"])
 
     def scan(self, job_id):
         seen = time.time_ns()
@@ -440,10 +446,16 @@ class Library(DeletionMixin):
         self._update_job(job_id, state=state, done=total, total=total, errors=errors[:100])
 
     @staticmethod
-    def _track_filter(query, root, track_filter="all", genre=""):
+    def _track_filter(query, root, track_filter="all", genre="", tag_field="all"):
         clauses = []
         args = []
-        if query:
+        if track_filter == "tag_search":
+            if tag_field not in ("all", *FIELDS):
+                raise LibraryError("Unknown tag search field")
+            if query:
+                clauses.append("cadence_tag_matches(tags,?,?)")
+                args.extend([tag_field, query])
+        elif query:
             clauses.append("(path LIKE ? OR tags LIKE ?)")
             args.extend(["%" + query + "%"] * 2)
         if root:
@@ -465,7 +477,7 @@ class Library(DeletionMixin):
                 args.append(genre.casefold())
             else:
                 clauses.append("0")
-        elif track_filter != "all":
+        elif track_filter not in ("all", "tag_search"):
             raise LibraryError("Unknown library filter")
         return (" WHERE " + " AND ".join(clauses) if clauses else ""), args
 
@@ -480,10 +492,10 @@ class Library(DeletionMixin):
         return " ORDER BY {} {}, path {}".format(sort_columns[sort], direction.upper(), direction.upper())
 
     def tracks(self, query="", root="", offset=0, limit=100, sort="path", direction="asc",
-               track_filter="all", genre=""):
+               track_filter="all", genre="", tag_field="all"):
         limit = max(1, min(int(limit), 1000))
         offset = max(0, int(offset))
-        where, args = self._track_filter(query, root, track_filter, genre)
+        where, args = self._track_filter(query, root, track_filter, genre, tag_field)
         order = self._track_order(sort, direction)
         with self._db() as db:
             count = db.execute("SELECT count(*) FROM tracks" + where, args).fetchone()[0]
@@ -522,8 +534,8 @@ class Library(DeletionMixin):
                 db.commit()
 
     def track_paths(self, query="", root="", sort="path", direction="asc",
-                    track_filter="all", genre=""):
-        where, args = self._track_filter(query, root, track_filter, genre)
+                    track_filter="all", genre="", tag_field="all"):
+        where, args = self._track_filter(query, root, track_filter, genre, tag_field)
         order = self._track_order(sort, direction)
         with self._db() as db:
             rows = db.execute("SELECT path FROM tracks" + where + order + " LIMIT 5001", args).fetchall()

@@ -1,13 +1,13 @@
 const fields = ["title", "artist", "album", "album_artist", "track", "disc", "date", "genre", "comment"];
 const labels = {title:"Title",artist:"Artist",album:"Album",album_artist:"Album artist",track:"Track",disc:"Disc",date:"Date",genre:"Genre",comment:"Comment"};
 const state = {csrf:"",items:[],knownTracks:new Map(),selected:new Set(),queue:new Map(),offset:0,pageSize:100,trackRequest:0,total:0,root:"",query:"",sort:"",direction:"asc",editing:[],draft:{},touchedFields:new Set(),artwork:null,artworkRequest:0,plan:null,view:"library",poll:null,jobDetail:null};
-Object.assign(state,{trackFilter:"all",genreKey:"",genreChoicesRequest:0,listRevision:0,autoId3Upgrade:true,editorFollowsSelection:false,selectionAnchor:null});
+Object.assign(state,{trackFilter:"all",tagField:"all",libraryView:"tracks",totalTracks:0,groupPaths:[],selectionRequest:0,listRevision:0,autoId3Upgrade:true,editorFollowsSelection:false,selectionAnchor:null});
 const $ = selector => document.querySelector(selector);
 const esc = value => String(value ?? "").replace(/[&<>"']/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[char]));
 const fmtDuration = value => `${Math.floor(value/60)}:${String(value%60).padStart(2,"0")}`;
 const formatTimestamp = value => value == null ? "Unavailable" : new Date(value*1000).toLocaleString();
 const maxSelection = 5000;
-const columns = [
+const trackColumns = [
   {id:"title",label:"Title / File",sort:"title",width:220,min:140},
   {id:"path",label:"Path",sort:"path",width:190,min:120},
   {id:"artist",label:"Artist",sort:"artist",width:130,min:100},
@@ -17,29 +17,42 @@ const columns = [
   {id:"format",label:"Format",sort:"format",width:105,min:105,fixed:true},
   {id:"duration",label:"Length",sort:"duration",width:88,min:88,fixed:true}
 ];
+const groupColumnNames={label:"",album_artist:"Album artist",year:"Year",artists:"Artists",albums:"Albums",tracks:"Tracks",duration:"Length"};
+function columnsForView(view){
+  if(view==="tracks")return trackColumns;
+  const ids=view==="albums"?["label","album_artist","year","tracks","duration"]:view==="artists"?["label","albums","tracks","duration"]:["label","artists","albums","tracks","duration"];
+  return ids.map(id=>({id,label:id==="label"?({albums:"Album",artists:"Artist",genres:"Genre",decades:"Decade",years:"Year"})[view]:groupColumnNames[id],sort:id,width:id==="label"?250:id==="album_artist"?180:100,min:id==="label"?140:90,fixed:["tracks","albums","artists","duration"].includes(id)}));
+}
+let columns=trackColumns;
 let columnOrder=columns.map(column=>column.id);
 let hiddenColumns=new Set();
 let columnWidths=Object.fromEntries(columns.map(column=>[column.id,column.width]));
 let floatingHeader;
 function folderView(){return state.trackFilter==="empty_folders"}
+function groupedView(){return state.libraryView!=="tracks"}
+function rowKey(item){return groupedView()?item.key:item.path}
+function itemName(){return folderView()?"folders":state.libraryView}
+function columnSettingsKey(){return groupedView()?`cadence-columns-${state.libraryView}-v1`:"cadence-columns-v2"}
 function visibleColumns(){return columnOrder.filter(id=>!hiddenColumns.has(id)||(folderView()&&["title","path"].includes(id))).map(id=>columns.find(column=>column.id===id))}
-function saveColumnSettings(){try{localStorage.setItem("cadence-columns-v2",JSON.stringify({order:columnOrder,hidden:[...hiddenColumns],widths:columnWidths}))}catch{}}
+function saveColumnSettings(){try{localStorage.setItem(columnSettingsKey(),JSON.stringify({order:columnOrder,hidden:[...hiddenColumns],widths:columnWidths,sort:folderView()?state.trackSort?.sort:state.sort,direction:folderView()?state.trackSort?.direction:state.direction}))}catch{}}
 function loadColumnSettings(){
+  columns=columnsForView(state.libraryView);columnOrder=columns.map(column=>column.id);hiddenColumns=new Set();columnWidths=Object.fromEntries(columns.map(column=>[column.id,column.width]));state.sort=groupedView()?"label":"path";state.direction="asc";
   try{
-    const saved=JSON.parse(localStorage.getItem("cadence-columns-v2"));
+    const saved=JSON.parse(localStorage.getItem(columnSettingsKey()));
     const ids=columns.map(column=>column.id);
     if(saved&&Array.isArray(saved.order)&&saved.order.length&&new Set(saved.order).size===saved.order.length&&saved.order.every(id=>ids.includes(id))){
       columnOrder=[...saved.order,...ids.filter(id=>!saved.order.includes(id))];
     }
     if(saved&&Array.isArray(saved.hidden)&&saved.hidden.every(id=>ids.includes(id))&&saved.hidden.length<ids.length)hiddenColumns=new Set(saved.hidden);
     if(saved&&saved.widths)for(const column of columns)if(!column.fixed&&Number.isFinite(saved.widths[column.id])&&saved.widths[column.id]>=column.min&&saved.widths[column.id]<=2000)columnWidths[column.id]=saved.widths[column.id];
-    if(!saved){
+    if(saved&&columns.some(column=>column.sort===saved.sort)&&["asc","desc"].includes(saved.direction)){state.sort=saved.sort;state.direction=saved.direction}
+    if(!saved&&!groupedView()){
       const previous=JSON.parse(localStorage.getItem("cadence-column-widths-v1"));
       if(Array.isArray(previous)&&previous.length===7)["title","path","artist","album"].forEach((id,index)=>{const column=columns.find(item=>item.id===id);if(Number.isFinite(previous[index+1])&&previous[index+1]>=column.min&&previous[index+1]<=2000)columnWidths[id]=previous[index+1]});
     }
   }catch{}
 }
-function headerMarkup(){return `<tr><th class="check-col"><input id="select-page" type="checkbox" aria-label="Select visible ${folderView()?"folders":"tracks"}"></th>${visibleColumns().map(column=>`<th data-column="${column.id}" class="${column.id==="path"?"path-col":column.id==="duration"?"duration-col":""}" aria-sort="none"><button class="sort-button" data-sort="${column.sort}" ${folderView()&&!["title","path"].includes(column.id)?"disabled":""}>${column.label.toUpperCase()} <span class="sort-indicator" aria-hidden="true">↕</span></button>${column.fixed?"":`<button type="button" class="column-resize" data-column="${column.id}" aria-label="Resize ${column.label} column" title="Drag to resize column · Arrow keys for fine adjustment"></button>`}</th>`).join("")}<th class="row-fill" aria-hidden="true"></th></tr>`}
+function headerMarkup(){return `<tr><th class="check-col"><input id="select-page" type="checkbox" aria-label="Select visible ${itemName()}"></th>${visibleColumns().map(column=>`<th data-column="${column.id}" class="${column.id==="path"?"path-col":column.id==="duration"?"duration-col":""}" aria-sort="none"><button class="sort-button" data-sort="${column.sort}" ${folderView()&&!["title","path"].includes(column.id)?"disabled":""}>${column.label.toUpperCase()} <span class="sort-indicator" aria-hidden="true">↕</span></button>${column.fixed?"":`<button type="button" class="column-resize" data-column="${column.id}" aria-label="Resize ${column.label} column" title="Drag to resize column · Arrow keys for fine adjustment"></button>`}</th>`).join("")}<th class="row-fill" aria-hidden="true"></th></tr>`}
 function renderColumnHeaders(){
   const table=$("#library-table");
   table.tHead.innerHTML=headerMarkup();
@@ -92,6 +105,7 @@ function setupLibraryTable(){
   floatingHeader.append(floatingSurface);
   document.body.append(floatingHeader);
   loadColumnSettings();
+  syncLibraryControls();
   renderColumnHeaders();
   wrap.addEventListener("scroll",syncFloatingHeader,{passive:true});
   window.addEventListener("scroll",syncFloatingHeader,{passive:true});
@@ -104,7 +118,7 @@ async function loadQueue(){const {items}=await api("/api/queue");setQueue(items)
 function showView(view){if(view==="library"&&folderView())state.folderScope=null;state.view=view;document.querySelectorAll(".nav-item").forEach(node=>node.classList.toggle("active",node.dataset.view===view));document.querySelectorAll(".view").forEach(node=>node.classList.toggle("hidden",node.id!==`${view}-view`));$("#page-title").textContent={library:"Library",activity:"Activity",settings:"Settings"}[view];if(view==="library"){loadQueue().then(refreshFilteredTracks).catch(error=>toast(error.message))}if(view==="activity")loadActivity();if(view==="settings")loadSettings();requestAnimationFrame(syncFloatingHeader)}
 async function refreshRoots(){const {roots}=await api("/api/roots");$("#folder-list").innerHTML=roots.length?roots.map(root=>`<button class="folder-item ${state.root===root?"active":""}" data-root="${esc(root)}" title="${esc(root)}"><span>▣</span><span class="name">${esc(root.split("/").pop())}</span><span class="remove" data-remove="${esc(root)}" title="Remove folder">×</span></button>`).join(""):`<span class="folder-item">No folders yet</span>`;$("#root-filter").innerHTML=`<option value="">All libraries</option>`+roots.map(root=>`<option value="${esc(root)}">${esc(root)}</option>`).join("");$("#root-filter").value=state.root}
 function updateSortHeaders(){document.querySelectorAll(".sort-button").forEach(button=>{const active=state.sort===button.dataset.sort;button.closest("th").setAttribute("aria-sort",active?(state.direction==="asc"?"ascending":"descending"):"none");button.querySelector(".sort-indicator").textContent=active?(state.direction==="asc"?"↑":"↓"):"↕"})}
-function libraryFilters(){return {q:state.query,root:state.root,filter:state.trackFilter,genre:state.genreKey}}
+function libraryFilters(){return {view:state.libraryView,q:state.query,root:state.root,filter:state.trackFilter,tag_field:state.tagField}}
 function libraryFilterKey(){return JSON.stringify(libraryFilters())}
 function syncPagination(range){
   const pageCount=Math.ceil(state.total/state.pageSize);
@@ -126,8 +140,8 @@ function syncPagination(range){
 }
 function resetFilteredSelection(){
   closeEditor();
-  state.selected.clear();state.selectionAnchor=null;state.listSelection=null;state.listRevision++;state.trackRequest++;state.offset=0;
-  state.items=[];state.total=0;$("#track-rows").innerHTML="";syncPagination("Loading…");syncSelection();
+  state.selected.clear();state.groupPaths=[];state.selectionRequest++;state.resolvingSelection=false;state.selectionAnchor=null;state.listSelection=null;state.listRevision++;state.trackRequest++;state.offset=0;
+  state.items=[];state.total=0;state.totalTracks=0;$("#track-rows").innerHTML="";syncPagination("Loading…");syncSelection();
 }
 async function applyLibraryFilter(){
   const wasFolders=folderView();
@@ -135,34 +149,33 @@ async function applyLibraryFilter(){
   if(folderView()&&!wasFolders){state.trackSort={sort:state.sort,direction:state.direction};state.sort="path";state.direction="asc";state.folderScope=null}
   if(!folderView()&&wasFolders){Object.assign(state,state.trackSort||{sort:"",direction:"asc"});state.folderScanToken=(state.folderScanToken||0)+1;state.folderLoading=false;$("#folder-scan-status").classList.add("hidden")}
   renderColumnHeaders();
-  $("#search").placeholder=folderView()?"Search folder names or paths":"Search titles, artists, albums or paths";
-  $("#genre-pattern").classList.toggle("hidden",state.trackFilter!=="genre_search");
-  state.genreKey="";
-  if(state.trackFilter!=="genre_search")state.genreChoicesRequest++;
-  $("#filter-hint").textContent=({no_album_folder:"Files directly inside an artist folder beneath the library root.",missing_year:"No recognizable year in the Date tag.",invalid_characters:"Hidden control or replacement characters in saved tags.",genre_search:"Choose a genre to find tracks with that saved tag."})[state.trackFilter]||"";
+  state.tagField="all";
+  syncLibraryControls();
   resetFilteredSelection();
   try{await refreshFilteredTracks()}catch(error){toast(error.message)}
 }
-async function refreshGenreChoices(){
-  const request=++state.genreChoicesRequest,root=state.root,selected=state.genreKey,control=$("#genre-filter");
-  control.disabled=true;
-  control.innerHTML='<option value="">Loading genres…</option>';
-  try{
-    const {genres}=await api(`/api/genres/list?${new URLSearchParams({root})}`);
-    if(request!==state.genreChoicesRequest||root!==state.root||state.trackFilter!=="genre_search")return;
-    control.innerHTML='<option value="">Choose a genre</option>'+genres.map(item=>`<option value="${esc(item.genre_key)}">${esc(item.genre)} (${item.count.toLocaleString()})</option>`).join("");
-    control.value=selected;
-    if(control.value!==selected){state.genreKey="";resetFilteredSelection()}
-    control.disabled=!genres.length;
-    if(!genres.length)control.innerHTML='<option value="">No indexed genres</option>';
-  }catch(error){
-    if(request===state.genreChoicesRequest){control.innerHTML='<option value="">Could not load genres</option>';state.genreKey="";toast(error.message)}
-  }
-}
 async function refreshFilteredTracks(){
   if(folderView()&&state.folderScope!==state.root){await refreshEmptyFolders();return}
-  if(state.trackFilter==="genre_search")await refreshGenreChoices();
   await refreshTracks();
+}
+function syncLibraryControls(){
+  const name=itemName();
+  $("#track-filter option[value='all']").textContent=`All ${state.libraryView}`;
+  $("#track-filter").setAttribute("aria-label",`Filter ${state.libraryView}`);
+  $("#track-filter option[value='empty_folders']").hidden=groupedView();
+  $("#track-filter option[value='empty_folders']").disabled=groupedView();
+  $("#tag-pattern").classList.toggle("hidden",state.trackFilter!=="tag_search");
+  $("#tag-field").value=state.tagField;
+  $("#search").placeholder=folderView()?"Search folder names or paths":state.trackFilter==="tag_search"?`Search ${state.tagField==="all"?"all tags":$("#tag-field").selectedOptions[0].textContent.toLowerCase()}`:groupedView()?`Search ${name}`:"Search titles, artists, albums or paths";
+  $("#filter-hint").textContent=({no_album_folder:"Files directly inside an artist folder beneath the library root.",missing_year:"No recognizable year in the Date tag.",invalid_characters:"Hidden control or replacement characters in saved tags.",tag_search:groupedView()?"Find groups through their saved track tags; edits apply to the whole group.":"Search saved tags using the search box."})[state.trackFilter]||(groupedView()&&state.trackFilter!=="all"?"Matching tracks reveal groups; edits apply to the whole group.":"");
+  for(const id of ["page-size","page-size-top"])$("#"+id).setAttribute("aria-label",`${name} per page`);
+}
+async function changeLibraryView(){
+  saveColumnSettings();
+  if(folderView()){state.trackFilter="all";$("#track-filter").value="all";state.folderScanToken=(state.folderScanToken||0)+1;state.folderLoading=false;$("#folder-scan-status").classList.add("hidden")}
+  state.libraryView=$("#library-view-select").value;
+  resetFilteredSelection();loadColumnSettings();syncLibraryControls();renderColumnHeaders();
+  try{await refreshFilteredTracks()}catch(error){toast(error.message)}
 }
 async function refreshEmptyFolders(){
   const token=state.folderScanToken=(state.folderScanToken||0)+1,root=state.root;
@@ -191,16 +204,17 @@ async function refreshTracks(){
   if(folderView()&&state.folderLoading)return;
   const request=++state.trackRequest;
   const params=new URLSearchParams({...libraryFilters(),offset:state.offset,limit:state.pageSize,sort:state.sort||"path",direction:state.direction});
-  const data=await api(`${folderView()?"/api/empty-folders":"/api/tracks"}?${params}`);
+  const data=await api(`${folderView()?"/api/empty-folders":groupedView()?"/api/groups":"/api/tracks"}?${params}`);
   if(request!==state.trackRequest)return;
   if(state.offset&&state.offset>=data.total){state.offset=data.total?Math.floor((data.total-1)/state.pageSize)*state.pageSize:0;return refreshTracks()}
-  state.items=data.items;state.total=data.total;
+  state.items=data.items;state.total=data.total;state.totalTracks=groupedView()?data.total_tracks:data.total;
   $("#genre-scan-hint").classList.toggle("hidden",!data.genres_need_scan);
-  data.items.forEach(item=>state.knownTracks.set(item.path,item));
-  $("#indexed-label").textContent=folderView()?"EMPTY FOLDERS":"TRACKS INDEXED";
+  if(!groupedView())data.items.forEach(item=>state.knownTracks.set(item.path,item));
+  $("#indexed-label").textContent=folderView()?"EMPTY FOLDERS":`${state.libraryView.toUpperCase()} INDEXED`;
   $("#track-count").textContent=data.total.toLocaleString();
-  syncPagination(data.total?`${state.offset+1}–${Math.min(state.offset+data.items.length,data.total)} of ${data.total.toLocaleString()}`:folderView()?"0 folders":"0 tracks");
+  syncPagination(data.total?`${state.offset+1}–${Math.min(state.offset+data.items.length,data.total)} of ${data.total.toLocaleString()}`:`0 ${itemName()}`);
   $("#track-rows").innerHTML=data.items.map(item=>{
+    if(groupedView())return groupRowMarkup(item);
     const image=item.item_kind==="folder"?'<svg class="folder-icon" viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 6h7l2 2h9v12H3z"/><path d="M3 6V4h7l2 2h7v2"/></svg>':item.artwork?`<img src="/api/art/image?${esc(new URLSearchParams({path:item.path,version:item.mtime_ns}))}" alt="" loading="lazy" decoding="async">`:"♫";
     const cells={
       title:`<span class="title-cell"><span class="art-thumb" aria-hidden="true">${image}</span><span class="title-copy"><span class="track-title">${esc(item.name||item.tags.title||item.path.split("/").pop())}</span>${state.queue.has(item.path)?`<span class="queued-label">● ${state.queue.get(item.path).operation==="delete"?"Queued deletion":"Queued change"}</span>`:""}</span></span>`,
@@ -213,71 +227,118 @@ async function refreshTracks(){
     return `<tr data-path="${esc(item.path)}" class="${state.selected.has(item.path)?"selected":""} ${state.queue.has(item.path)?"queued":""}"><td class="check-col"><input type="checkbox" class="row-check" data-path="${esc(item.path)}" ${state.selected.has(item.path)?"checked":""} aria-label="Select ${esc(item.path)}"></td>${visibleColumns().map(column=>`<td class="${column.id==="path"?"path-col":column.id==="duration"?"duration-col":""}">${cells[column.id]}</td>`).join("")}<td class="row-fill" aria-hidden="true"></td></tr>`;
   }).join("");
   $("#empty-state").classList.toggle("hidden",data.items.length>0);
-  $("#empty-state h3").textContent=folderView()?"No empty folders":state.trackFilter==="genre_search"?(state.genreKey?"No tracks use this genre":"Choose a genre"):"No tracks here yet";
-  $("#empty-state p").textContent=folderView()?"Only folders with no entries appear here. Change your search or run Scan folders to refresh.":state.trackFilter==="genre_search"?(state.genreKey?"Try another genre or folder.":"Select a genre above to find its tracks."):"Add a folder and scan it, or change your search.";
-  $("#empty-add").classList.toggle("hidden",folderView()||state.trackFilter==="genre_search");
+  $("#empty-state h3").textContent=`No ${itemName()} here`;
+  $("#empty-state p").textContent=folderView()?"Only folders with no entries appear here. Change your search or run Scan folders to refresh.":"Add a folder and scan it, or change your search or filters.";
+  $("#empty-add").classList.toggle("hidden",folderView());
   updateSortHeaders();syncSelection();requestAnimationFrame(syncFloatingHeader);
+  if(groupedView()&&state.selected.size&&!state.resolvingSelection&&!state.selectingList){
+    const valid=await updateGroupSelection(new Set(state.selected));
+    if(request!==state.trackRequest)return;
+    if(!valid){state.selected.clear();state.groupPaths=[];closeEditor();syncSelection()}
+  }
+}
+function groupRowMarkup(item){
+  const years=item.first_year==null?"—":item.first_year===item.last_year?String(item.first_year):`${item.first_year}–${item.last_year}`;
+  const cells={label:`<span class="track-title">${esc(item.label)}</span>${item.queued_count?`<span class="queued-label">● ${item.queued_count.toLocaleString()} queued</span>`:""}`,album_artist:esc(item.album_artist),year:years,tracks:item.tracks.toLocaleString(),albums:item.albums.toLocaleString(),artists:item.artists.toLocaleString(),duration:fmtDuration(item.duration)};
+  return `<tr data-path="${esc(item.key)}" class="${state.selected.has(item.key)?"selected":""} ${item.queued_count?"queued":""}"><td class="check-col"><input type="checkbox" class="row-check" data-path="${esc(item.key)}" ${state.selected.has(item.key)?"checked":""} aria-label="Select ${esc(item.label)}"></td>${visibleColumns().map(column=>`<td class="${column.id==="duration"?"duration-col":""}">${cells[column.id]}</td>`).join("")}<td class="row-fill" aria-hidden="true"></td></tr>`;
 }
 function syncSelection(){
-  if(!state.selected.has(state.selectionAnchor)||!state.items.some(item=>item.path===state.selectionAnchor))state.selectionAnchor=null;
-  $("#selected-count").textContent=`${state.selected.size.toLocaleString()} selected`;
-  $("#edit-selected").disabled=!state.selected.size;
-  const overListLimit=state.total>maxSelection;
+  if(!state.selected.has(state.selectionAnchor)||!state.items.some(item=>rowKey(item)===state.selectionAnchor))state.selectionAnchor=null;
+  $("#selected-count").textContent=groupedView()?`${state.selected.size.toLocaleString()} ${state.selected.size===1?itemName().slice(0,-1):itemName()} selected · ${state.groupPaths.length.toLocaleString()} ${state.groupPaths.length===1?"track":"tracks"}`: `${state.selected.size.toLocaleString()} selected`;
+  $("#edit-selected").disabled=!state.selected.size||Boolean(state.resolvingSelection||state.selectingList);
+  const overListLimit=state.totalTracks>maxSelection;
   const selectList=$("#select-list"),tooltip=$("#select-list-tooltip");
-  selectList.disabled=!state.total||overListLimit||Boolean(state.selectingList);
-  tooltip.title=overListLimit?"This list exceeds the 5,000-item batch limit. Narrow the search or library filter to select the entire list.":"";
+  selectList.disabled=!state.total||overListLimit||Boolean(state.selectingList)||Boolean(state.resolvingSelection);
+  tooltip.title=overListLimit?"This list exceeds the 5,000-track batch limit. Narrow the search or library filter to select the entire list.":"";
   tooltip.classList.toggle("over-limit",overListLimit);
   tooltip.tabIndex=overListLimit?0:-1;
   const cached=state.listSelection;
   const cachedPaths=cached?.key===libraryFilterKey()&&cached.paths.length===state.total&&
-    state.items.every(item=>cached.pathSet.has(item.path))?cached.paths:null;
-  const listPaths=cachedPaths||(state.items.length===state.total?state.items.map(item=>item.path):null);
+    state.items.every(item=>cached.pathSet.has(rowKey(item)))?cached.paths:null;
+  const listPaths=cachedPaths||(state.items.length===state.total?state.items.map(rowKey):null);
   const allSelected=listPaths?.length>0&&listPaths.every(path=>state.selected.has(path));
   selectList.textContent=state.selectingList?"Updating selection…":
     `${allSelected?"Deselect":"Select"} entire list (${state.total.toLocaleString()})`;
-  const visibleSelected=state.items.filter(item=>state.selected.has(item.path)).length;
-  document.querySelectorAll("#select-page,#select-page-sticky").forEach(box=>{box.checked=state.items.length>0&&visibleSelected===state.items.length;box.indeterminate=visibleSelected>0&&visibleSelected<state.items.length});
-  document.querySelectorAll("#track-rows tr").forEach(row=>{const selected=state.selected.has(row.dataset.path);row.classList.toggle("selected",selected);row.querySelector(".row-check").checked=selected});
-  syncEditorSelection();
+  const visibleSelected=state.items.filter(item=>state.selected.has(rowKey(item))).length;
+  document.querySelectorAll("#select-page,#select-page-sticky").forEach(box=>{box.checked=state.items.length>0&&visibleSelected===state.items.length;box.indeterminate=visibleSelected>0&&visibleSelected<state.items.length;box.disabled=Boolean(state.resolvingSelection||state.selectingList)});
+  document.querySelectorAll("#track-rows tr").forEach(row=>{const selected=state.selected.has(row.dataset.path);row.classList.toggle("selected",selected);const box=row.querySelector(".row-check");box.checked=selected;box.disabled=Boolean(state.resolvingSelection||state.selectingList)});
+  if(!state.resolvingSelection&&!state.selectingList)syncEditorSelection();
 }
 function syncEditorSelection(){
   if($("#inspector").classList.contains("hidden"))return;
-  const paths=[...state.selected];
+  const paths=groupedView()?state.groupPaths:[...state.selected];
   if(state.editorFollowsSelection){
     if(!paths.length){closeEditor();return}
   }else if(paths.length<2)return;
   if(paths.length===state.editing.length&&paths.every(path=>state.editing.includes(path)))return;
   openEditor(paths,true);
 }
-function addSelection(paths){
+async function resolveGroups(options){
+  const data=await api("/api/groups/paths",{...libraryFilters(),...options});
+  if(data.track)state.knownTracks.set(data.track.path,data.track);
+  return data;
+}
+async function openGroupEditor(keys,followSelection=false){
+  if(!keys.length||state.resolvingSelection)return;
+  const revision=state.listRevision,request=++state.selectionRequest,editorRequest=state.editorOpenRequest;
+  state.resolvingSelection=true;syncSelection();
+  try{
+    const data=await resolveGroups({keys});
+    if(revision!==state.listRevision||request!==state.selectionRequest||editorRequest!==state.editorOpenRequest)return;
+    if(followSelection)state.groupPaths=data.paths;
+    openEditor(data.paths,followSelection);
+  }catch(error){if(revision===state.listRevision)toast(error.message)}
+  finally{if(request===state.selectionRequest){state.resolvingSelection=false;syncSelection()}}
+}
+async function updateGroupSelection(keys){
+  const revision=state.listRevision,request=++state.selectionRequest;
+  if(!keys.size){state.selected.clear();state.groupPaths=[];syncSelection();return true}
+  state.resolvingSelection=true;syncSelection();
+  try{
+    const data=await resolveGroups({keys:[...keys]});
+    if(revision!==state.listRevision||request!==state.selectionRequest)return false;
+    state.selected=new Set(data.keys);state.groupPaths=data.paths;return true;
+  }catch(error){if(revision===state.listRevision)toast(error.message);return false}
+  finally{if(request===state.selectionRequest){state.resolvingSelection=false;syncSelection()}}
+}
+async function addSelection(paths){
   const selected=new Set(state.selected);
   paths.forEach(path=>selected.add(path));
+  if(groupedView())return updateGroupSelection(selected);
   if(selected.size>maxSelection){toast("Select no more than 5,000 items at once. Clear the selection or narrow the list.");syncSelection();return false}
   state.selected=selected;
   syncSelection();
   return true;
 }
-function selectTrackRange(path){
-  const start=state.items.findIndex(item=>item.path===state.selectionAnchor);
-  const end=state.items.findIndex(item=>item.path===path);
+async function removeSelection(paths){
+  const selected=new Set(state.selected);paths.forEach(path=>selected.delete(path));
+  if(groupedView())return updateGroupSelection(selected);
+  state.selected=selected;syncSelection();
+}
+async function selectTrackRange(path){
+  const start=state.items.findIndex(item=>rowKey(item)===state.selectionAnchor);
+  const end=state.items.findIndex(item=>rowKey(item)===path);
   if(end<0)return;
-  if(start<0){if(addSelection([path]))state.selectionAnchor=path;return}
-  addSelection(state.items.slice(Math.min(start,end),Math.max(start,end)+1).map(item=>item.path));
+  if(start<0){if(await addSelection([path]))state.selectionAnchor=path;return}
+  await addSelection(state.items.slice(Math.min(start,end),Math.max(start,end)+1).map(rowKey));
 }
 async function selectEntireList(){
-  if(!state.total||state.total>maxSelection||state.selectingList)return;
+  if(!state.total||state.totalTracks>maxSelection||state.selectingList||state.resolvingSelection)return;
   const filters=libraryFilters(),key=libraryFilterKey(),revision=state.listRevision,sort=state.sort||"path",direction=state.direction;
   state.selectingList=true;
   syncSelection();
   try{
     const params=new URLSearchParams({...filters,sort,direction});
-    const {paths}=await api(`${folderView()?"/api/empty-folders/paths":"/api/tracks/paths"}?${params}`);
+    const data=groupedView()?await resolveGroups({all_matching:true}):await api(`${folderView()?"/api/empty-folders/paths":"/api/tracks/paths"}?${params}`);
+    const paths=groupedView()?data.keys:data.paths;
     if(revision!==state.listRevision||key!==libraryFilterKey()){return}
     state.listSelection={key,paths,pathSet:new Set(paths)};
     if(paths.length&&paths.every(path=>state.selected.has(path))){
       paths.forEach(path=>state.selected.delete(path));
+      if(groupedView())state.groupPaths=[];
     }else{
       state.selected=new Set(paths);
+      if(groupedView())state.groupPaths=data.paths;
     }
     syncSelection();
   }catch(error){toast(error.message)}
@@ -417,11 +478,11 @@ async function loadArtwork(path){
 async function loadQueuedArtwork(path){const request=state.artworkRequest;try{const art=await api(`/api/queue/art?${new URLSearchParams({path})}`);if(request===state.artworkRequest&&!$("#inspector").classList.contains("hidden")){$("#cover-preview").innerHTML=`<img alt="Queued album art" src="data:${art.mime};base64,${art.data}">`;$("#artwork-status").textContent="Queued replacement artwork"}}catch{if(request===state.artworkRequest)loadArtwork(path)}}
 $("#cover-preview").addEventListener("error",event=>{if(event.target.tagName!=="IMG")return;$("#cover-preview").textContent="▣";$("#artwork-status").textContent="Artwork exists, but this image cannot be previewed"},true);
 function stopTrackPreview(){const audio=$("#preview-audio");audio.pause();audio.removeAttribute("src");audio.load()}
-function closeEditor(){state.artworkRequest++;state.editorFollowsSelection=false;stopTrackPreview();$("#inspector").classList.add("hidden")}
+function closeEditor(){state.editorOpenRequest=(state.editorOpenRequest||0)+1;state.artworkRequest++;state.editorFollowsSelection=false;stopTrackPreview();$("#inspector").classList.add("hidden")}
 function openModal(eyebrow,title,body,actions){$("#modal-eyebrow").textContent=eyebrow;$("#modal-title").textContent=title;$("#modal-body").innerHTML=body;$("#modal-actions").innerHTML=actions;$("#cancel-all").classList.add("hidden");$("#modal-backdrop").classList.remove("hidden")}
 function closeModal(){$("#modal-backdrop").classList.add("hidden");state.confirmation=null;state.jobDetail=null}
 function showColumnSettings(){
-  openModal("LIBRARY VIEW","Choose columns",`<p>Choose which columns to show and use the arrows to change their order. Track, Disc, Format, and Length have fixed widths.</p><div class="column-options">${columnOrder.map((id,index)=>{
+  openModal("LIBRARY VIEW","Choose columns",`<p>Choose which columns to show and use the arrows to change their order. Count columns, Track, Disc, Format, and Length have fixed widths.</p><div class="column-options">${columnOrder.map((id,index)=>{
     const column=columns.find(item=>item.id===id);
     return `<div class="column-option" data-column-option="${id}"><label><input type="checkbox" data-column-visible="${id}" ${!hiddenColumns.has(id)||(folderView()&&["title","path"].includes(id))?"checked":""} ${folderView()&&["title","path"].includes(id)?"disabled":""}> ${esc(column.label)}</label><div><button type="button" class="secondary" data-column-move="up" data-column-id="${id}" aria-label="Move ${esc(column.label)} up" ${index===0?"disabled":""}>↑</button><button type="button" class="secondary" data-column-move="down" data-column-id="${id}" aria-label="Move ${esc(column.label)} down" ${index===columnOrder.length-1?"disabled":""}>↓</button></div></div>`;
   }).join("")}</div>`,`<button class="primary" id="modal-cancel">Done</button>`);
@@ -463,7 +524,7 @@ async function addToQueue(){
     const stagedCount=pending.paths.filter(path=>staged.has(path)).length;
     if(!stagedCount&&pending.delete!==false){toast("No changes needed for the selected items");return}
     closeEditor();
-    state.selected.clear();
+    state.selected.clear();state.groupPaths=[];
     await refreshTracks();
     toast(pending.delete===false?"Queue updated":`${stagedCount} item${stagedCount===1?"":"s"} in the queue`);
   }catch(error){toast(error.message)}
@@ -515,7 +576,7 @@ function showFinalConfirmation(action){
 }
 async function commitPlan(){
   state.folderScope=null;
-  const data=await api("/api/commit",{id:state.plan.id});setQueue(data.queue);closeModal();closeEditor();state.selected.clear();toast(`Commit ${data.state==="queued"?"queued":"started"}: ${data.job.slice(0,8)}`);showView("activity");
+  const data=await api("/api/commit",{id:state.plan.id});setQueue(data.queue);closeModal();closeEditor();state.selected.clear();state.groupPaths=[];toast(`Commit ${data.state==="queued"?"queued":"started"}: ${data.job.slice(0,8)}`);showView("activity");
 }
 function jobKindLabel(kind){return kind==="folder_scan"?"Folder scan":kind==="scheduled_scan"?"Scheduled scan":kind}
 async function loadActivity(){try{
@@ -583,7 +644,7 @@ window.addEventListener("resize",()=>applyInspectorWidth());
 applyInspectorWidth();
 $("#login-form").addEventListener("submit",async event=>{event.preventDefault();try{await api("/api/login",{password:$("#password").value,remember_me:$("#remember-me").checked});$("#password").value="";await init()}catch(error){$("#login-error").textContent=error.message}});
 document.querySelectorAll(".nav-item").forEach(node=>node.addEventListener("click",()=>showView(node.dataset.view)));
-document.addEventListener("click",async event=>{const button=event.target.closest(".sort-button");if(!button||button.disabled)return;if(state.sort===button.dataset.sort){state.direction=state.direction==="asc"?"desc":"asc"}else{state.sort=button.dataset.sort;state.direction="asc"}state.offset=0;try{await refreshTracks()}catch(error){toast(error.message)}});
+document.addEventListener("click",async event=>{const button=event.target.closest(".sort-button");if(!button||button.disabled)return;if(state.sort===button.dataset.sort){state.direction=state.direction==="asc"?"desc":"asc"}else{state.sort=button.dataset.sort;state.direction="asc"}state.offset=0;saveColumnSettings();try{await refreshTracks()}catch(error){toast(error.message)}});
 document.addEventListener("pointerdown",event=>{
   const handle=event.target.closest(".column-resize");
   if(!handle||event.button!==0)return;
@@ -617,27 +678,29 @@ $("#configure-columns").addEventListener("click",showColumnSettings);
 $("#folder-list").addEventListener("click",async event=>{const remove=event.target.closest("[data-remove]");if(remove){event.stopPropagation();if(confirm(`Remove ${remove.dataset.remove} from the index? Files will not be deleted.`)){try{await api("/api/roots/remove",{path:remove.dataset.remove});state.root="";resetFilteredSelection();await Promise.all([refreshRoots(),loadQueue()]);await refreshFilteredTracks()}catch(error){toast(error.message)}}return}const node=event.target.closest("[data-root]");if(node){state.root=node.dataset.root;resetFilteredSelection();$("#root-filter").value=state.root;await refreshRoots();showView("library")}});
 $("#root-filter").addEventListener("change",async event=>{state.root=event.target.value;resetFilteredSelection();await refreshRoots();await refreshFilteredTracks()});
 $("#track-filter").addEventListener("change",applyLibraryFilter);
-$("#genre-filter").addEventListener("change",async event=>{state.genreKey=event.target.value;resetFilteredSelection();try{await refreshTracks()}catch(error){toast(error.message)}});
+$("#library-view-select").addEventListener("change",changeLibraryView);
+$("#tag-field").addEventListener("change",async event=>{state.tagField=event.target.value;resetFilteredSelection();syncLibraryControls();try{await refreshTracks()}catch(error){toast(error.message)}});
 let searchTimer;$("#search").addEventListener("input",event=>{clearTimeout(searchTimer);state.query=event.target.value.trim();resetFilteredSelection();searchTimer=setTimeout(async()=>{try{await refreshTracks()}catch(error){toast(error.message)}},250)});
 for(const id of ["page-size","page-size-top"])$("#"+id).addEventListener("change",async event=>{state.pageSize=Number(event.target.value);state.offset=Math.floor(state.offset/state.pageSize)*state.pageSize;try{await refreshTracks()}catch(error){toast(error.message)}});
 for(const id of ["page-jump","page-jump-top"])$("#"+id).addEventListener("change",async event=>{const page=Number(event.target.value);const pageCount=Math.ceil(state.total/state.pageSize);if(!Number.isInteger(page)||page<1||page>pageCount)return;state.offset=(page-1)*state.pageSize;try{await refreshTracks()}catch(error){toast(error.message)}});
 for(const id of ["previous-page","previous-page-top"])$("#"+id).addEventListener("click",async()=>{state.offset=Math.max(0,state.offset-state.pageSize);await refreshTracks()});
 for(const id of ["next-page","next-page-top"])$("#"+id).addEventListener("click",async()=>{state.offset+=state.pageSize;await refreshTracks()});
-document.addEventListener("change",event=>{if(!["select-page","select-page-sticky"].includes(event.target.id))return;if(event.target.checked)addSelection(state.items.map(item=>item.path));else{state.items.forEach(item=>state.selected.delete(item.path));syncSelection()}});
+document.addEventListener("change",async event=>{if(!["select-page","select-page-sticky"].includes(event.target.id)||state.resolvingSelection)return;if(event.target.checked)await addSelection(state.items.map(rowKey));else await removeSelection(state.items.map(rowKey))});
 // Prevent browser text highlighting while extending a track selection.
 $("#track-rows").addEventListener("mousedown",event=>{if(event.shiftKey&&event.target.closest("tr[data-path]"))event.preventDefault()});
-$("#track-rows").addEventListener("click",event=>{
+$("#track-rows").addEventListener("click",async event=>{
+  if(state.resolvingSelection||state.selectingList)return;
   const row=event.target.closest("tr[data-path]");if(!row)return;
   const path=row.dataset.path,box=event.target.closest(".row-check");
-  if(event.shiftKey){selectTrackRange(path);return}
+  if(event.shiftKey){await selectTrackRange(path);return}
   if(box||state.selected.size){
     const selecting=box?box.checked:!state.selected.has(path);
-    if(selecting){if(addSelection([path]))state.selectionAnchor=path}
-    else{state.selected.delete(path);syncSelection()}
-  }else openEditor([path]);
+    if(selecting){if(await addSelection([path]))state.selectionAnchor=path}
+    else await removeSelection([path]);
+  }else if(groupedView())await openGroupEditor([path]);else openEditor([path]);
 });
 $("#track-rows").addEventListener("error",event=>{if(event.target.matches(".art-thumb img")){event.target.parentElement.textContent="▣";event.target.parentElement.title="Embedded artwork exists, but cannot be previewed"}},true);
-$("#select-list").addEventListener("click",selectEntireList);$("#edit-selected").addEventListener("click",()=>openEditor([...state.selected],true));$("#close-inspector").addEventListener("click",closeEditor);
+$("#select-list").addEventListener("click",selectEntireList);$("#edit-selected").addEventListener("click",async()=>{if(groupedView())await openGroupEditor([...state.selected],true);else openEditor([...state.selected],true)});$("#close-inspector").addEventListener("click",closeEditor);
 $("#edit-fields").addEventListener("input",event=>{const field=event.target.dataset.field;if(!field)return;state.touchedFields.add(field);state.draft[field]=event.target.value});
 $("#edit-fields").addEventListener("change",event=>{
   const field=event.target.dataset.clear;
@@ -718,7 +781,7 @@ $("#modal-backdrop").addEventListener("click",async event=>{
 $("#modal-backdrop").addEventListener("change",event=>{
   const box=event.target.closest("[data-column-visible]");
   if(!box)return;
-  if(!box.checked&&hiddenColumns.size===columns.length-1){box.checked=true;toast("Keep at least one track column visible");return}
+  if(!box.checked&&hiddenColumns.size===columns.length-1){box.checked=true;toast("Keep at least one column visible");return}
   if(box.checked)hiddenColumns.delete(box.dataset.columnVisible);else hiddenColumns.add(box.dataset.columnVisible);
   updateColumns();
 });

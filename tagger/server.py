@@ -324,11 +324,18 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send_json(library.tracks(query.get("q", ""), query.get("root", ""),
                                                           query.get("offset", "0"), query.get("limit", "100"),
                                                           query.get("sort", "path"), query.get("direction", "asc"),
-                                                          query.get("filter", "all"), query.get("genre", "")))
+                                                          query.get("filter", "all"), query.get("genre", ""),
+                                                          query.get("tag_field", "all")))
                 if path == "/api/tracks/paths":
                     return self._send_json(library.track_paths(query.get("q", ""), query.get("root", ""),
                                                                 query.get("sort", "path"), query.get("direction", "asc"),
-                                                                query.get("filter", "all"), query.get("genre", "")))
+                                                                query.get("filter", "all"), query.get("genre", ""),
+                                                                query.get("tag_field", "all")))
+                if path == "/api/groups":
+                    return self._send_json(library.groups(query.get("view", ""), query.get("q", ""),
+                        query.get("root", ""), query.get("offset", 0), query.get("limit", 100),
+                        query.get("sort", "label"), query.get("direction", "asc"),
+                        query.get("filter", "all"), query.get("tag_field", "all")))
                 if path == "/api/queue":
                     return self._send_json({"items": library.queue_items()})
                 if path == "/api/queue/art":
@@ -393,6 +400,10 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send_json(library.common_artwork(body.get("paths"), body.get("expected")))
                 if path == "/api/tracks/common":
                     return self._send_json(library.common_tags(body.get("paths")))
+                if path == "/api/groups/paths":
+                    return self._send_json(library.group_paths(body.get("view", ""), body.get("root", ""),
+                        body.get("keys"), body.get("all_matching", False), body.get("q", ""),
+                        body.get("filter", "all"), body.get("tag_field", "all")))
                 if path == "/api/logout":
                     cookie = SimpleCookie()
                     cookie.load(self.headers.get("Cookie", ""))
