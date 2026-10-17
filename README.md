@@ -121,4 +121,4 @@ Grouped browsing uses authenticated `GET /api/groups` with `view=albums|artists|
 
 ## Current validation boundary
 
-This build has been tested on Linux with generated files for every listed format and local HTTP API checks. DSM installation and operation have also been exercised by a DS1817+ user, but this specific update has not yet been retested on that NAS. Treat the SPK as a test build until it passes device validation. The package does not bundle `fpcalc`, so fingerprint lookup is unavailable until a compatible binary is installed.
+This build has been tested on Linux with generated files for every listed format and local HTTP API checks. Build 0054 has also been exercised on a DS1817+ NAS running DSM 7, where the metadata tag search and the Albums, Artists, Genres, Decades and Years views were verified working. The package does not bundle `fpcalc`, so fingerprint lookup is unavailable until a compatible binary is installed.
