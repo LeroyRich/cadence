@@ -83,7 +83,7 @@ On a Linux build computer with Python 3 and pip:
 sh build_spk.sh
 ```
 
-The script creates `Cadence-0.1.0-0056.spk`. Build 0056 previews queued values and artwork directly in track and grouped lists, with pending markers and the existing queued counts. It includes the artwork filtering and album thumbnails added in build 0055. Builds are published as release assets rather than committed to this repository; the previous published build is the [0.1.0 build 0054 release](https://github.com/LeroyRich/cadence/releases/tag/v0.1.0-0054). For an offline rebuild, set `MUTAGEN_SOURCE` to a directory containing `mutagen/` and `mutagen-1.47.0.dist-info/`.
+The script creates `Cadence-0.1.0-0056.spk`. Build 0056 previews queued values and artwork directly in track and grouped lists, with pending markers and the existing queued counts. It includes the artwork filtering and album thumbnails added in build 0055. Builds are published as release assets rather than committed to this repository; this build is attached to the [0.1.0 build 0056 release](https://github.com/LeroyRich/cadence/releases/tag/v0.1.0-0056) (`Cadence-0.1.0-0056.spk`, 256,000 bytes, SHA-256 `c75295c088720bbd1f2ee2bc013ead37d1214cc4bc3724aed0b625f865ce7bae`). For an offline rebuild, set `MUTAGEN_SOURCE` to a directory containing `mutagen/` and `mutagen-1.47.0.dist-info/`.
 
 ## Install on DSM
 
