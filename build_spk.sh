@@ -15,7 +15,7 @@ fi
 find "$STAGE/payload" -type d -name __pycache__ -prune -exec rm -rf {} +
 cat > "$STAGE/spk/INFO" <<'EOF'
 package="Cadence"
-version="0.1.0-0054"
+version="0.1.0-0056"
 displayname="Cadence Music Tagger"
 description="Edit, enrich and organize music metadata on your NAS"
 arch="noarch"
@@ -55,6 +55,6 @@ for size in (16,24,32,48,64,72,256):
 PY
 tar -C "$STAGE/payload" -czf "$STAGE/spk/package.tgz" tagger web ui vendor
 printf 'extractsize="%s"\n' "$(du -sk "$STAGE/payload" | cut -f1)" >> "$STAGE/spk/INFO"
-tar -C "$STAGE/spk" -cf "$PROJECT/Cadence-0.1.0-0054.spk" \
+tar -C "$STAGE/spk" -cf "$PROJECT/Cadence-0.1.0-0056.spk" \
     INFO package.tgz PACKAGE_ICON.PNG PACKAGE_ICON_256.PNG WIZARD_UIFILES conf scripts
-echo "$PROJECT/Cadence-0.1.0-0054.spk"
+echo "$PROJECT/Cadence-0.1.0-0056.spk"

@@ -1,5 +1,6 @@
 import base64
 import http.client
+import hashlib
 from io import BytesIO
 import json
 import shutil
@@ -233,6 +234,29 @@ class FormatTests(unittest.TestCase):
             audio.save()
             self.assertTrue(read_file(path)["artwork"])
             self.assertEqual(artwork_bytes(path), (PNG, "image/png"))
+            self.assertEqual(read_file(path)["artwork_signature"], hashlib.sha256(PNG).hexdigest())
+
+    def test_artwork_signatures_across_formats_and_unpreviewable_data(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            for extension in FORMATS:
+                with self.subTest(extension=extension):
+                    path = make_audio(Path(temporary), extension)
+                    self.assertEqual(read_file(path)["artwork_signature"], "none")
+                    if extension == "wma":
+                        audio = ASF(str(path))
+                        picture = bytes([3]) + len(PNG).to_bytes(4, "little") + "image/png\0\0".encode("utf-16-le") + PNG
+                        audio.tags["WM/Picture"] = [ASFByteArrayAttribute(picture)]
+                        audio.save()
+                    else:
+                        apply_tags(path, {}, (PNG, "image/png"))
+                    self.assertEqual(read_file(path)["artwork_signature"], hashlib.sha256(PNG).hexdigest())
+            path = make_audio(Path(temporary), "mp3")
+            audio = open_audio(path)
+            if audio.tags is None:
+                audio.add_tags()
+            audio.tags.add(APIC(encoding=3, mime="image/jpeg", type=3, desc="Broken", data=b"not an image"))
+            audio.save()
+            self.assertTrue(read_file(path)["artwork_signature"].startswith("unpreviewable:"))
 
     def test_scan_refreshes_old_artwork_index_entries(self):
         with tempfile.TemporaryDirectory() as temporary:

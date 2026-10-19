@@ -340,6 +340,9 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send_json({"items": library.queue_items()})
                 if path == "/api/queue/art":
                     return self._send_json(library.queue_artwork(query["path"]))
+                if path == "/api/queue/art/image":
+                    data, mime = library.queued_artwork_image(query["path"], query.get("revision", ""))
+                    return self._send_image(data, mime, '"queue-{}"'.format(query.get("revision", "")))
                 if path == "/api/track":
                     return self._send_json(library.track(query["path"]))
                 if path == "/api/audio":
@@ -421,6 +424,9 @@ class Handler(BaseHTTPRequestHandler):
                 if path == "/api/scan":
                     job_id = library.start_scan()
                     return self._send_json({"job": job_id, "state": library.job(job_id)["state"]})
+                if path == "/api/artwork/index":
+                    job_id = library.start_artwork_index(body.get("root", ""))
+                    return self._send_json({"job": job_id})
                 if path == "/api/cancel":
                     library.cancel_job(body["id"])
                     return self._send_json({"ok": True})

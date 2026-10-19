@@ -1,4 +1,6 @@
 import json
+import base64
+import hashlib
 import shutil
 import tempfile
 import time
@@ -22,7 +24,7 @@ class GroupTests(unittest.TestCase):
         self.library = Library(self.base / "state", allowed_volume=self.base, resume_jobs=False)
         self.library.add_root(str(self.root))
 
-    def add(self, name, root=None, artwork=True, index=True, **tags):
+    def add(self, name, root=None, artwork=True, index=True, signature=None, **tags):
         root = root or self.root
         path = str(root / name)
         with self.library._db() as db:
@@ -34,6 +36,8 @@ class GroupTests(unittest.TestCase):
                  *sort_values(Path(path), root, tags), tag_filter_flags(tags)))
             if index:
                 self.library._index_groups(db, path, tags)
+            db.execute("UPDATE tracks SET artwork_signature=? WHERE path=?",
+                       (signature if artwork else "none", path))
         return path
 
     def test_album_identity_and_summary_use_album_artist_then_artist(self):
@@ -163,7 +167,7 @@ class GroupTests(unittest.TestCase):
             for index in range(1, 5001):
                 copy = str(self.root / (str(index) + ".mp3"))
                 db.execute("""INSERT INTO tracks SELECT ?,root,format,tags,duration,artwork,size,mtime_ns,seen,
-                    sort_title,sort_artist,sort_album,sort_path,device,inode,filter_flags,genre_indexed,artwork_indexed
+                    sort_title,sort_artist,sort_album,sort_path,device,inode,filter_flags,genre_indexed,artwork_indexed,artwork_signature
                     FROM tracks WHERE path=?""", (copy, path))
                 db.execute("INSERT INTO track_groups SELECT ?,view,key,label,credit,year FROM track_groups WHERE path=?", (copy, path))
         row = self.library.groups("albums")["items"][0]
@@ -184,6 +188,91 @@ class GroupTests(unittest.TestCase):
         for keys in (None, [], ["missing"], ["x", "x"], [None]):
             with self.assertRaises(LibraryError):
                 self.library.group_paths("artists", keys=keys)
+
+    def test_mismatched_artwork_finds_all_tracks_of_named_albums(self):
+        expected = [self.add("different-a.mp3", album="Different", artist="Artist", signature="a"),
+                    self.add("different-b.mp3", album="Different", artist="Artist", signature="b"),
+                    self.add("different-missing.mp3", album="Different", artist="Artist", artwork=False)]
+        for suffix in ("a", "b"):
+            self.add("same-" + suffix + ".mp3", album="Same", artist="Artist", signature="a")
+            self.add("missing-" + suffix + ".mp3", album="Missing", artist="Artist", artwork=False)
+        self.add("single.mp3", album="Single", artist="Artist", signature="a")
+        self.add("untagged-a.mp3", artist="Artist", signature="a")
+        self.add("untagged-b.mp3", artist="Artist", signature="b")
+        self.add("other-artist.mp3", album="Same", artist="Other", signature="b")
+        options = {"track_filter": "mismatched_artwork"}
+        self.assertEqual(set(self.library.track_paths(**options)["paths"]), set(expected))
+        self.assertEqual(self.library.tracks(**options, limit=2)["total"], 3)
+        self.assertEqual(self.library.tracks(**options, offset=2)["items"][0]["path"], expected[2])
+        self.assertEqual(self.library.track_paths(**options, query="different-a")["paths"], [expected[0]])
+        albums = self.library.groups("albums", **options)
+        self.assertEqual((albums["total"], albums["total_tracks"]), (1, 3))
+        self.assertEqual(albums["items"][0]["label"], "Different")
+        self.assertEqual(set(self.library.group_paths("albums", all_matching=True, **options)["paths"]), set(expected))
+
+    def test_mismatch_includes_missing_cover_but_ignores_unknown_signatures(self):
+        self.add("present.mp3", album="Partial", signature="cover")
+        self.add("absent.mp3", album="Partial", artwork=False)
+        self.add("known.mp3", album="Unknown", signature="cover")
+        self.add("unknown.mp3", album="Unknown")
+        self.add("unavailable.mp3", album="Unknown", signature="unavailable")
+        result = self.library.groups("albums", track_filter="mismatched_artwork")
+        self.assertEqual([row["label"] for row in result["items"]], ["Partial"])
+        self.assertTrue(result["artwork_needs_scan"])
+        for view in ("artists", "genres", "years", "decades"):
+            with self.assertRaisesRegex(LibraryError, "Tracks or Albums"):
+                self.library.groups(view, track_filter="mismatched_artwork")
+            with self.assertRaisesRegex(LibraryError, "Tracks or Albums"):
+                self.library.group_paths(view, all_matching=True, track_filter="mismatched_artwork")
+
+    def test_artwork_comparison_uses_library_scope_before_search(self):
+        first = self.add("first.mp3", album="Record", artist="Artist", signature="a")
+        other = self.base / "other"
+        other.mkdir()
+        self.library.add_root(str(other))
+        self.add("second.mp3", root=other, album="Record", artist="Artist", signature="b")
+        self.assertEqual(self.library.groups("albums", track_filter="mismatched_artwork")["total"], 1)
+        self.assertEqual(self.library.track_paths(track_filter="mismatched_artwork", query="first")["paths"], [first])
+        for root in (self.root, other):
+            self.assertEqual(self.library.groups("albums", root=str(root), track_filter="mismatched_artwork")["total"], 0)
+            self.assertEqual(self.library.tracks(root=str(root), track_filter="mismatched_artwork")["total"], 0)
+            self.assertIsNotNone(self.library.groups("albums", root=str(root))["items"][0]["artwork_path"])
+
+    def test_album_thumbnail_requires_same_previewable_cover_on_every_track(self):
+        cover = self.add("same-a.mp3", album="Same", signature="cover")
+        self.add("same-b.mp3", album="Same", signature="cover")
+        for album, signatures in (("Different", ["a", "b"]), ("Partial", ["a", "none"]),
+                                  ("Missing", ["none", "none"]), ("Unknown", ["a", None]),
+                                  ("Unpreviewable", ["unpreviewable:a", "unpreviewable:a"]),
+                                  ("Unavailable", ["unavailable", "unavailable"])):
+            for index, signature in enumerate(signatures):
+                self.add(album + str(index) + ".mp3", album=album, signature=signature, artwork=signature != "none")
+        rows = {row["label"]: row for row in self.library.groups("albums")["items"]}
+        self.assertEqual(rows["Same"]["artwork_path"], cover)
+        self.assertEqual(rows["Same"]["artwork_mtime_ns"], 1)
+        for album in ("Different", "Partial", "Missing", "Unknown", "Unpreviewable", "Unavailable"):
+            self.assertIsNone(rows[album]["artwork_path"], album)
+        filtered = self.library.groups("albums", track_filter="no_artwork")["items"]
+        self.assertTrue(all(row["artwork_path"] is None for row in filtered))
+
+    def test_artwork_index_reuses_queued_scan_and_preserves_unknown_state_on_restart(self):
+        self.add("legacy.mp3", album="Record")
+        with patch("tagger.library.read_file", side_effect=AssertionError("startup read audio")):
+            self.library = Library(self.base / "state", allowed_volume=self.base, resume_jobs=False)
+        self.assertTrue(self.library.artwork_needs_scan())
+        with patch.object(self.library, "_launch_next_job"):
+            job = self.library.start_artwork_index()
+            self.assertEqual(self.library.start_artwork_index(), job)
+        self.assertEqual(self.library.job(job)["kind"], "scan")
+        self.assertEqual(self.library.job(job)["state"], "queued")
+
+    def test_artwork_presence_changes_invalidate_old_signature(self):
+        path = self.add("saved.mp3", album="Record", signature="cover")
+        Path(path).touch()
+        self.library.set_artwork_presence(path, False)
+        self.assertEqual(self.library.track(path)["artwork_signature"], "none")
+        self.library.set_artwork_presence(path, True)
+        self.assertIsNone(self.library.track(path)["artwork_signature"])
 
     def test_http_group_listing_resolution_and_track_tag_search(self):
         path = self.add("a.mp3", artist="Artist", album="Record", comment="Live")
@@ -234,12 +323,14 @@ class GroupEditingTests(unittest.TestCase):
             library.queue_add(paths, {"album": "Renamed", "genre": ["Jazz"]}, mode="artist_album", rename="title")
             self.assertEqual(library.common_tags(paths)["common"]["album"], "Renamed")
             self.assertEqual(library.groups("albums")["items"][0]["label"], "Record")
+            self.assertEqual(library.groups("albums")["items"][0]["pending"]["label"], "Renamed")
             self.assertEqual(library.groups("albums")["items"][0]["queued_count"], 2)
             preview = library.preview_queue()
             self.assertEqual(len(preview["items"]), 2)
             self.wait(library, library.start_commit(preview["id"]))
             row = library.groups("albums")["items"][0]
             self.assertEqual((row["label"], row["tracks"]), ("Renamed", 2))
+            self.assertNotIn("pending", row)
             self.assertEqual(library.groups("genres")["items"][0]["label"], "Jazz")
             moved = library.group_paths("albums", keys=[row["key"]])["paths"]
             self.assertTrue(all("Renamed (1999)" in path for path in moved))
@@ -249,6 +340,45 @@ class GroupEditingTests(unittest.TestCase):
             self.assertEqual(library.groups("albums")["total"], 0)
             with library._db() as db:
                 self.assertEqual(db.execute("SELECT count(*) FROM track_groups").fetchone()[0], 0)
+
+    def test_saved_artwork_filter_and_thumbnail_follow_commits_and_legacy_refresh(self):
+        from test_app import make_audio, PNG
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root = base / "music"
+            root.mkdir()
+            paths = []
+            for index in range(2):
+                directory = root / str(index)
+                directory.mkdir()
+                path = make_audio(directory, "mp3")
+                apply_tags(path, {"title": str(index), "album": "Record", "artist": "Artist"}, (PNG, "image/png"))
+                paths.append(str(path))
+            library = Library(base / "state", allowed_volume=base)
+            library.add_root(str(root))
+            self.wait(library, library.start_scan())
+            original = library.groups("albums")["items"][0]
+            self.assertIsNotNone(original["artwork_path"])
+            with library._db() as db:
+                saved = db.execute("SELECT artwork_signature FROM tracks ORDER BY path").fetchall()
+                self.assertTrue(all(row[0] == hashlib.sha256(PNG).hexdigest() for row in saved))
+                db.execute("UPDATE tracks SET artwork_signature=NULL")
+            self.assertIsNone(library.groups("albums")["items"][0]["artwork_path"])
+            self.assertTrue(library.artwork_needs_scan())
+            self.wait(library, library.start_artwork_index())
+            self.assertFalse(library.artwork_needs_scan())
+            self.assertEqual(library.groups("albums")["items"][0]["artwork_path"], original["artwork_path"])
+            library.queue_add(paths[:1], {}, artwork={"mime": "image/png", "data": base64.b64encode(PNG + b"changed").decode()})
+            self.assertEqual(library.tracks(track_filter="mismatched_artwork")["total"], 0)
+            self.assertIsNotNone(library.groups("albums")["items"][0]["artwork_path"])
+            self.wait(library, library.start_commit(library.preview_queue()["id"]))
+            self.assertEqual(library.tracks(track_filter="mismatched_artwork")["total"], 2)
+            self.assertIsNone(library.groups("albums")["items"][0]["artwork_path"])
+            library.queue_add(paths, {}, artwork={"mime": "image/png", "data": base64.b64encode(PNG).decode()})
+            self.wait(library, library.start_commit(library.preview_queue()["id"]))
+            self.assertEqual(library.tracks(track_filter="mismatched_artwork")["total"], 0)
+            self.assertIsNotNone(library.groups("albums")["items"][0]["artwork_path"])
+            self.assertIsNone(library.start_artwork_index())
 
 
 if __name__ == "__main__":

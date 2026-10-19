@@ -2,6 +2,7 @@
 
 import base64
 import binascii
+import hashlib
 from copy import deepcopy
 
 from mutagen import File
@@ -127,6 +128,7 @@ def read_file(path):
     return {"path": str(path), "format": format_name(audio), "tags": read_tags(audio),
             "duration": round(getattr(audio.info, "length", 0) or 0),
             "artwork": has_artwork(audio),
+            "artwork_signature": artwork_signature(audio),
             "id3_version": getattr(audio.tags, "version", (2, 4, 0))[1]
             if isinstance(audio, (MP3, WAVE, AIFF)) else None}
 
@@ -187,12 +189,12 @@ def _asf_picture(value):
     return picture_type, raw[offset:offset + size]
 
 
-def _artwork_from_audio(audio):
+def _artwork_candidates(audio):
     candidates = []
     if isinstance(audio, FLAC):
         candidates = [(picture.type, picture.data) for picture in audio.pictures]
     elif audio.tags is None:
-        return None
+        return []
     elif isinstance(audio, (MP3, WAVE, AIFF)):
         candidates = [(frame.type, frame.data) for frame in audio.tags.getall("APIC")]
     elif isinstance(audio, MP4):
@@ -216,12 +218,28 @@ def _artwork_from_audio(audio):
     else:
         candidates = [picture for value in audio.tags.get("WM/Picture", [])
                       if (picture := _asf_picture(value)) is not None]
-    for _, data in sorted(candidates, key=lambda candidate: candidate[0] != 3):
+    return sorted(candidates, key=lambda candidate: candidate[0] != 3)
+
+
+def _artwork_from_audio(audio, candidates=None):
+    for _, data in _artwork_candidates(audio) if candidates is None else candidates:
         if 0 < len(data) <= MAX_PREVIEW_ARTWORK_BYTES:
             mime = _image_mime(data)
             if mime:
                 return data, mime
     return None
+
+
+def artwork_signature(audio):
+    if not has_artwork(audio):
+        return "none"
+    candidates = _artwork_candidates(audio)
+    preview = _artwork_from_audio(audio, candidates)
+    # Compare the displayed front cover; retain comparison for non-previewable images too.
+    data = preview[0] if preview else next((data for _, data in candidates if data), None)
+    if not data:
+        return "unavailable"
+    return ("" if preview else "unpreviewable:") + hashlib.sha256(data).hexdigest()
 
 
 def inspect_artwork(path):

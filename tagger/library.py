@@ -225,6 +225,10 @@ class Library(DeletionMixin, GroupMixin):
                 db.execute("UPDATE tracks SET filter_flags=NULL")
             if "artwork_indexed" not in columns:
                 db.execute("ALTER TABLE tracks ADD COLUMN artwork_indexed INTEGER NOT NULL DEFAULT 0")
+            if "artwork_signature" not in columns:
+                db.execute("ALTER TABLE tracks ADD COLUMN artwork_signature TEXT")
+                db.execute("UPDATE tracks SET artwork_signature='none' WHERE artwork=0 AND artwork_indexed=1")
+            db.execute("CREATE INDEX IF NOT EXISTS tracks_artwork_signature ON tracks(artwork_signature,root)")
             flags_version = db.execute("SELECT value FROM settings WHERE key='tag_filter_flags_version'").fetchone()
             if flags_version is None or flags_version[0] != "2":
                 db.execute("UPDATE tracks SET filter_flags=cadence_tag_flags(tags)")
@@ -270,6 +274,7 @@ class Library(DeletionMixin, GroupMixin):
             connection.create_function("cadence_contains", 2, contains)
             connection.create_function("cadence_casefold", 1, lambda value: str(value or "").casefold())
             connection.create_function("cadence_tag_matches", 3, tag_matches)
+            connection.create_function("cadence_album_named", 1, lambda key: bool(json.loads(key)[0]))
             with connection:
                 yield connection
         finally:
@@ -387,7 +392,8 @@ class Library(DeletionMixin, GroupMixin):
             (str(path), str(root), details["format"], json.dumps(details["tags"]),
              details["duration"], int(details["artwork"]), stat.st_size, stat.st_mtime_ns, seen,
              sort_title, sort_artist, sort_album, sort_path, tag_filter_flags(details["tags"])))
-        db.execute("UPDATE tracks SET device=?,inode=? WHERE path=?", (stat.st_dev, stat.st_ino, str(path)))
+        db.execute("UPDATE tracks SET device=?,inode=?,artwork_signature=? WHERE path=?",
+                   (stat.st_dev, stat.st_ino, details.get("artwork_signature", "none" if not details["artwork"] else None), str(path)))
         db.execute("DELETE FROM track_genres WHERE path=?", (str(path),))
         db.executemany("INSERT INTO track_genres VALUES (?,?,?)",
                        [(str(path), genre, genre.casefold()) for genre in clean_genres(details["tags"].get("genre"))])
@@ -410,9 +416,9 @@ class Library(DeletionMixin, GroupMixin):
                         if path.suffix.lower() not in EXTENSIONS or path.is_symlink():
                             continue
                         try:
-                            row = db.execute("SELECT size,mtime_ns,genre_indexed,artwork_indexed FROM tracks WHERE path=?", (str(path),)).fetchone()
+                            row = db.execute("SELECT size,mtime_ns,genre_indexed,artwork_indexed,artwork_signature FROM tracks WHERE path=?", (str(path),)).fetchone()
                             stat = path.stat()
-                            if row and row[0] == stat.st_size and row[1] == stat.st_mtime_ns and row[2] and row[3]:
+                            if row and row[0] == stat.st_size and row[1] == stat.st_mtime_ns and row[2] and row[3] and row[4] is not None:
                                 db.execute("UPDATE tracks SET seen=?,root=?,sort_path=?,device=?,inode=? WHERE path=?",
                                            (seen, str(root), path.relative_to(root).as_posix().casefold(), stat.st_dev, stat.st_ino, str(path)))
                             else:
@@ -466,6 +472,17 @@ class Library(DeletionMixin, GroupMixin):
             args.append(TAG_FILTERS[track_filter])
         elif track_filter == "no_artwork":
             clauses.append("artwork=0")
+        elif track_filter == "mismatched_artwork":
+            scope = " WHERE t.root=?" if root else ""
+            clauses.append("""path IN (SELECT g.path FROM track_groups g
+                WHERE g.view='albums' AND g.key IN (
+                    SELECT a.key FROM track_groups a JOIN tracks t ON t.path=a.path
+                    {scope}{conjunction} a.view='albums' AND cadence_album_named(a.key)
+                    GROUP BY a.key HAVING count(DISTINCT CASE WHEN t.artwork_signature!='unavailable'
+                        THEN t.artwork_signature END)>1))""".format(
+                        scope=scope, conjunction=" AND" if root else " WHERE"))
+            if root:
+                args.append(root)
         elif track_filter == "no_album_folder":
             relative = "substr(path,length(root)+2)"
             clauses.append("length({0})-length(replace({0},'/', ''))=1".format(relative))
@@ -502,7 +519,8 @@ class Library(DeletionMixin, GroupMixin):
             rows = db.execute("SELECT * FROM tracks" + where + order + " LIMIT ? OFFSET ?",
                               args + [limit, offset]).fetchall()
             needs_scan = db.execute("SELECT 1 FROM tracks WHERE genre_indexed=0 LIMIT 1").fetchone() is not None
-        return {"total": count, "items": [self._track_dict(row) for row in rows], "genres_need_scan": needs_scan}
+        return {"total": count, "items": [self._track_dict(row) for row in rows], "genres_need_scan": needs_scan,
+                "artwork_needs_scan": track_filter == "mismatched_artwork" and self.artwork_needs_scan(root)}
 
     def genres(self, query=""):
         query = query.strip().casefold()[:1000].replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
@@ -643,8 +661,30 @@ class Library(DeletionMixin, GroupMixin):
 
     def set_artwork_presence(self, path, present):
         with self.lock, self._db() as db:
-            db.execute("UPDATE tracks SET artwork=?,artwork_indexed=1 WHERE path=?",
-                       (int(present), path))
+            db.execute("""UPDATE tracks SET artwork_signature=CASE WHEN ?=0 THEN 'none'
+                       WHEN artwork=0 THEN NULL ELSE artwork_signature END,
+                       artwork=?,artwork_indexed=1 WHERE path=?""", (int(present), int(present), path))
+
+    def artwork_needs_scan(self, root=""):
+        if not isinstance(root, str):
+            raise LibraryError("Invalid library scope")
+        with self._db() as db:
+            return db.execute("SELECT 1 FROM tracks WHERE artwork_signature IS NULL" +
+                              (" AND root=?" if root else "") + " LIMIT 1", (root,) if root else ()).fetchone() is not None
+
+    def start_artwork_index(self, root=""):
+        if not self.artwork_needs_scan(root):
+            return None
+        with self.lock, self._db() as db:
+            row = db.execute("""SELECT id FROM jobs WHERE kind IN ('scan','scheduled_scan')
+                AND state IN ('queued','running') ORDER BY created,rowid LIMIT 1""").fetchone()
+            if row:
+                return row[0]
+            job_id = uuid.uuid4().hex
+            db.execute("""INSERT INTO jobs(id,kind,state,done,total,errors,created)
+                VALUES (?,'scan','queued',0,0,'[]',?)""", (job_id, time.time()))
+        self._launch_next_job()
+        return job_id
 
     def _destination(self, source, root, tags, mode, rename):
         if mode == "none":
@@ -863,6 +903,17 @@ class Library(DeletionMixin, GroupMixin):
         if not row:
             raise LibraryError("No queued artwork")
         return {"mime": row["mime"], "data": base64.b64encode(row["data"]).decode("ascii")}
+
+    def queued_artwork_image(self, path, revision):
+        with self._db() as db:
+            queued = db.execute("SELECT data,revision FROM queued WHERE path=? AND inflight_job IS NULL", (path,)).fetchone()
+            if not queued or queued["revision"] != revision:
+                raise LibraryError("Queued artwork changed; refresh the list")
+            art_id = json.loads(queued["data"]).get("artwork_id")
+            row = db.execute("SELECT mime,data FROM queued_artwork WHERE id=?", (art_id,)).fetchone() if art_id else None
+        if not row:
+            raise LibraryError("No queued artwork")
+        return row["data"], row["mime"]
 
     def preview_queue(self, pending=None):
         if pending is not None:

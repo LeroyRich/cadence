@@ -30,6 +30,8 @@ let columnWidths=Object.fromEntries(columns.map(column=>[column.id,column.width]
 let floatingHeader;
 function folderView(){return state.trackFilter==="empty_folders"}
 function groupedView(){return state.libraryView!=="tracks"}
+function incompatibleArtworkView(){return state.trackFilter==="mismatched_artwork"&&!["tracks","albums"].includes(state.libraryView)}
+function needsArtworkView(){return state.libraryView==="albums"||state.trackFilter==="mismatched_artwork"&&!incompatibleArtworkView()}
 function rowKey(item){return groupedView()?item.key:item.path}
 function itemName(){return folderView()?"folders":state.libraryView}
 function columnSettingsKey(){return groupedView()?`cadence-columns-${state.libraryView}-v1`:"cadence-columns-v2"}
@@ -140,6 +142,7 @@ function syncPagination(range){
 }
 function resetFilteredSelection(){
   closeEditor();
+  state.artworkIndexRequest=(state.artworkIndexRequest||0)+1;state.artworkIndexLoading=false;$("#artwork-scan-status").classList.add("hidden");
   state.selected.clear();state.groupPaths=[];state.selectionRequest++;state.resolvingSelection=false;state.selectionAnchor=null;state.listSelection=null;state.listRevision++;state.trackRequest++;state.offset=0;
   state.items=[];state.total=0;state.totalTracks=0;$("#track-rows").innerHTML="";syncPagination("Loading…");syncSelection();
 }
@@ -167,7 +170,7 @@ function syncLibraryControls(){
   $("#tag-pattern").classList.toggle("hidden",state.trackFilter!=="tag_search");
   $("#tag-field").value=state.tagField;
   $("#search").placeholder=folderView()?"Search folder names or paths":state.trackFilter==="tag_search"?`Search ${state.tagField==="all"?"all tags":$("#tag-field").selectedOptions[0].textContent.toLowerCase()}`:groupedView()?`Search ${name}`:"Search titles, artists, albums or paths";
-  $("#filter-hint").textContent=({no_album_folder:"Files directly inside an artist folder beneath the library root.",missing_year:"No recognizable year in the Date tag.",invalid_characters:"Hidden control or replacement characters in saved tags.",tag_search:groupedView()?"Find groups through their saved track tags; edits apply to the whole group.":"Search saved tags using the search box."})[state.trackFilter]||(groupedView()&&state.trackFilter!=="all"?"Matching tracks reveal groups; edits apply to the whole group.":"");
+  $("#filter-hint").textContent=({no_album_folder:"Files directly inside an artist folder beneath the library root.",missing_year:"No recognizable year in the Date tag.",invalid_characters:"Hidden control or replacement characters in saved tags.",mismatched_artwork:"Albums with different saved covers, including a mix of present and missing artwork.",tag_search:groupedView()?"Find groups through their saved track tags; edits apply to the whole group.":"Search saved tags using the search box."})[state.trackFilter]||(groupedView()&&state.trackFilter!=="all"?"Matching tracks reveal groups; edits apply to the whole group.":"");
   for(const id of ["page-size","page-size-top"])$("#"+id).setAttribute("aria-label",`${name} per page`);
 }
 async function changeLibraryView(){
@@ -200,9 +203,50 @@ async function refreshEmptyFolders(){
     }
   }catch(error){if(token===state.folderScanToken&&folderView()){state.folderLoading=false;state.folderScope=null;status.textContent=`Could not refresh empty folders: ${error.message}`}}
 }
-async function refreshTracks(){
+function renderEmptyState(){
+  const incompatible=incompatibleArtworkView(),loading=state.artworkIndexLoading;
+  $("#empty-state").classList.toggle("hidden",!incompatible&&state.items.length>0);
+  $("#empty-state > div").textContent=incompatible?"ⓘ":({tracks:"♫",albums:"▣",artists:"♬",genres:"♫",decades:"◷",years:"◷"})[state.libraryView];
+  $("#empty-state > div").setAttribute("aria-hidden","true");
+  $("#empty-state h3").textContent=incompatible?"Choose a compatible view":loading?"Checking album artwork…":`No ${itemName()} here`;
+  $("#empty-state p").textContent=incompatible?"Mismatched album artwork is available in Tracks and Albums. Choose one of these views to see matching items.":loading?"The artwork index is refreshing in the background. Results will update when it finishes.":folderView()?"Only folders with no entries appear here. Change your search or run Scan folders to refresh.":state.trackFilter==="mismatched_artwork"?`No ${state.libraryView==="tracks"?"tracks from albums":"albums"} with mismatched artwork match this search and library. Change your search or filters.`:"Add a folder and scan it, or change your search or filters.";
+  $("#empty-add").classList.toggle("hidden",folderView()||incompatible||loading||state.trackFilter==="mismatched_artwork");
+}
+async function refreshArtworkIndex(){
+  if(state.artworkIndexLoading)return;
+  (state.artworkIndexAttempted||=new Set()).add(state.root);
+  const token=state.artworkIndexRequest=(state.artworkIndexRequest||0)+1,root=state.root;
+  const current=()=>token===state.artworkIndexRequest&&root===state.root&&needsArtworkView();
+  const status=$("#artwork-scan-status");state.artworkIndexLoading=true;
+  status.classList.remove("hidden");status.textContent="Refreshing saved album artwork…";renderEmptyState();
+  try{
+    const {job}=await api("/api/artwork/index",{root});
+    while(current()&&job){
+      const {job:result}=await api(`/api/jobs/detail?${new URLSearchParams({id:job,limit:1})}`);
+      if(!current())return;
+      if(!["queued","running","cancelling"].includes(result.state)){
+        status.classList.toggle("hidden",result.state==="complete");
+        status.textContent=result.state==="complete"?"":`Artwork refresh ${result.state}. Results may be incomplete. Run Scan folders to retry.`;
+        break;
+      }
+      status.textContent=result.state==="queued"?"Artwork refresh is waiting for the current job…":`Refreshing saved album artwork… ${result.done.toLocaleString()} tracks checked`;
+      await new Promise(resolve=>setTimeout(resolve,1000));
+    }
+    if(!current())return;
+    state.artworkIndexLoading=false;
+    if(!job)status.classList.add("hidden");
+    await refreshTracks(false);
+  }catch(error){if(current()){status.textContent=`Could not refresh album artwork: ${error.message}. Run Scan folders to retry.`;state.artworkIndexLoading=false;renderEmptyState()}}
+}
+async function refreshTracks(allowArtworkIndex=true){
   if(folderView()&&state.folderLoading)return;
   const request=++state.trackRequest;
+  if(incompatibleArtworkView()){
+    state.items=[];state.total=0;state.totalTracks=0;$("#track-rows").innerHTML="";
+    $("#indexed-label").textContent=`${state.libraryView.toUpperCase()} INDEXED`;$("#track-count").textContent="—";
+    $("#genre-scan-hint").classList.add("hidden");
+    syncPagination(`0 ${itemName()}`);syncSelection();renderEmptyState();requestAnimationFrame(syncFloatingHeader);return;
+  }
   const params=new URLSearchParams({...libraryFilters(),offset:state.offset,limit:state.pageSize,sort:state.sort||"path",direction:state.direction});
   const data=await api(`${folderView()?"/api/empty-folders":groupedView()?"/api/groups":"/api/tracks"}?${params}`);
   if(request!==state.trackRequest)return;
@@ -213,34 +257,53 @@ async function refreshTracks(){
   $("#indexed-label").textContent=folderView()?"EMPTY FOLDERS":`${state.libraryView.toUpperCase()} INDEXED`;
   $("#track-count").textContent=data.total.toLocaleString();
   syncPagination(data.total?`${state.offset+1}–${Math.min(state.offset+data.items.length,data.total)} of ${data.total.toLocaleString()}`:`0 ${itemName()}`);
-  $("#track-rows").innerHTML=data.items.map(item=>{
-    if(groupedView())return groupRowMarkup(item);
-    const image=item.item_kind==="folder"?'<svg class="folder-icon" viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 6h7l2 2h9v12H3z"/><path d="M3 6V4h7l2 2h7v2"/></svg>':item.artwork?`<img src="/api/art/image?${esc(new URLSearchParams({path:item.path,version:item.mtime_ns}))}" alt="" loading="lazy" decoding="async">`:"♫";
-    const cells={
-      title:`<span class="title-cell"><span class="art-thumb" aria-hidden="true">${image}</span><span class="title-copy"><span class="track-title">${esc(item.name||item.tags.title||item.path.split("/").pop())}</span>${state.queue.has(item.path)?`<span class="queued-label">● ${state.queue.get(item.path).operation==="delete"?"Queued deletion":"Queued change"}</span>`:""}</span></span>`,
-      path:`<span class="relative-path" title="${esc(item.relative_path)}">${esc(item.relative_path)}</span>`,
-      artist:esc(item.tags.artist||"—"),album:esc(item.tags.album||"—"),
-      track:esc(item.tags.track||"—"),disc:esc(item.tags.disc||"—"),
-      format:`<span class="format-badge">${esc(item.format)}</span>`,duration:fmtDuration(item.duration)
-    };
-    if(item.item_kind==="folder")for(const key of ["artist","album","track","disc","format","duration"])cells[key]="";
-    return `<tr data-path="${esc(item.path)}" class="${state.selected.has(item.path)?"selected":""} ${state.queue.has(item.path)?"queued":""}"><td class="check-col"><input type="checkbox" class="row-check" data-path="${esc(item.path)}" ${state.selected.has(item.path)?"checked":""} aria-label="Select ${esc(item.path)}"></td>${visibleColumns().map(column=>`<td class="${column.id==="path"?"path-col":column.id==="duration"?"duration-col":""}">${cells[column.id]}</td>`).join("")}<td class="row-fill" aria-hidden="true"></td></tr>`;
-  }).join("");
-  $("#empty-state").classList.toggle("hidden",data.items.length>0);
-  $("#empty-state h3").textContent=`No ${itemName()} here`;
-  $("#empty-state p").textContent=folderView()?"Only folders with no entries appear here. Change your search or run Scan folders to refresh.":"Add a folder and scan it, or change your search or filters.";
-  $("#empty-add").classList.toggle("hidden",folderView());
+  $("#track-rows").innerHTML=data.items.map(item=>groupedView()?groupRowMarkup(item):trackRowMarkup(item)).join("");
+  renderEmptyState();
   updateSortHeaders();syncSelection();requestAnimationFrame(syncFloatingHeader);
+  if(data.artwork_needs_scan&&allowArtworkIndex&&!state.artworkIndexAttempted?.has(state.root))refreshArtworkIndex();
+  else if(data.artwork_needs_scan&&allowArtworkIndex&&!state.artworkIndexLoading){
+    $("#artwork-scan-status").classList.remove("hidden");
+    $("#artwork-scan-status").textContent="Some album artwork has not been indexed. Run Scan folders to refresh it.";
+  }else if(!data.artwork_needs_scan&&!state.artworkIndexLoading)$("#artwork-scan-status").classList.add("hidden");
   if(groupedView()&&state.selected.size&&!state.resolvingSelection&&!state.selectingList){
     const valid=await updateGroupSelection(new Set(state.selected));
     if(request!==state.trackRequest)return;
     if(!valid){state.selected.clear();state.groupPaths=[];closeEditor();syncSelection()}
   }
 }
+function pendingValue(value,saved){
+  const hint=`Pending value · Saved: ${saved==null||saved===""?"Empty":saved}`;
+  return `${esc(value)}<span class="pending-field" role="img" aria-label="${esc(hint)}" title="${esc(hint)}">●</span>`;
+}
+function queueImage(path,revision){return `<img src="/api/queue/art/image?${esc(new URLSearchParams({path,revision}))}" alt="" loading="lazy" decoding="async">`}
+function trackRowMarkup(item){
+  const queued=state.queue.get(item.path),deleting=queued?.operation==="delete";
+  const edits=deleting?{}:queued?.edits||{},tags={...item.tags,...edits};
+  const cell=(field,fallback="—")=>{
+    const value=tags[field]||fallback;
+    return Object.prototype.hasOwnProperty.call(edits,field)&&String(edits[field]??"")!==String(item.tags[field]??"")?pendingValue(value,item.tags[field]):esc(value);
+  };
+  const pendingArtwork=!deleting&&queued?.artwork_id;
+  const image=item.item_kind==="folder"?'<svg class="folder-icon" viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 6h7l2 2h9v12H3z"/><path d="M3 6V4h7l2 2h7v2"/></svg>':pendingArtwork?queueImage(item.path,queued.revision):item.artwork?`<img src="/api/art/image?${esc(new URLSearchParams({path:item.path,version:item.mtime_ns}))}" alt="" loading="lazy" decoding="async">`:"♫";
+  const note=queued?`<span class="queued-label">● ${deleting?"Queued deletion":"Pending changes"}${pendingArtwork?" · Artwork":""}</span>`:"";
+  const cells={
+    title:`<span class="title-cell"><span class="art-thumb" aria-hidden="true">${image}</span><span class="title-copy"><span class="track-title">${item.item_kind==="folder"?esc(item.name):cell("title",item.path.split("/").pop())}</span>${note}</span></span>`,
+    path:`<span class="relative-path" title="${esc(item.relative_path)}">${esc(item.relative_path)}</span>`,
+    artist:cell("artist"),album:cell("album"),track:cell("track"),disc:cell("disc"),
+    format:`<span class="format-badge">${esc(item.format)}</span>`,duration:fmtDuration(item.duration)
+  };
+  if(item.item_kind==="folder")for(const key of ["artist","album","track","disc","format","duration"])cells[key]="";
+  return `<tr data-path="${esc(item.path)}" class="${state.selected.has(item.path)?"selected":""} ${queued?"queued":""}"><td class="check-col"><input type="checkbox" class="row-check" data-path="${esc(item.path)}" ${state.selected.has(item.path)?"checked":""} aria-label="Select ${esc(item.path)}"></td>${visibleColumns().map(column=>`<td class="${column.id==="path"?"path-col":column.id==="duration"?"duration-col":""}">${cells[column.id]}</td>`).join("")}<td class="row-fill" aria-hidden="true"></td></tr>`;
+}
 function groupRowMarkup(item){
   const years=item.first_year==null?"—":item.first_year===item.last_year?String(item.first_year):`${item.first_year}–${item.last_year}`;
-  const cells={label:`<span class="track-title">${esc(item.label)}</span>${item.queued_count?`<span class="queued-label">● ${item.queued_count.toLocaleString()} queued</span>`:""}`,album_artist:esc(item.album_artist),year:years,tracks:item.tracks.toLocaleString(),albums:item.albums.toLocaleString(),artists:item.artists.toLocaleString(),duration:fmtDuration(item.duration)};
-  return `<tr data-path="${esc(item.key)}" class="${state.selected.has(item.key)?"selected":""} ${item.queued_count?"queued":""}"><td class="check-col"><input type="checkbox" class="row-check" data-path="${esc(item.key)}" ${state.selected.has(item.key)?"checked":""} aria-label="Select ${esc(item.label)}"></td>${visibleColumns().map(column=>`<td class="${column.id==="duration"?"duration-col":""}">${cells[column.id]}</td>`).join("")}<td class="row-fill" aria-hidden="true"></td></tr>`;
+  const pending=item.pending||{};
+  const image=pending.artwork?(pending.artwork.path?queueImage(pending.artwork.path,pending.artwork.revision):"♫"):item.artwork_path?`<img src="/api/art/image?${esc(new URLSearchParams({path:item.artwork_path,version:item.artwork_mtime_ns}))}" alt="" loading="lazy" decoding="async">`:"♫";
+  const label=Object.prototype.hasOwnProperty.call(pending,"label")?pendingValue(pending.label,item.label):esc(item.label);
+  const note=item.queued_count?`<span class="queued-label">● ${item.queued_count.toLocaleString()} queued${pending.label?` · Saved: ${esc(item.label)}`:""}${pending.artwork?" · Pending artwork":""}</span>`:"";
+  const name=`<span class="title-copy"><span class="track-title">${label}</span>${note}</span>`;
+  const cells={label:state.libraryView==="albums"?`<span class="title-cell"><span class="art-thumb" aria-hidden="true">${image}</span>${name}</span>`:name,album_artist:pending.album_artist!==undefined?pendingValue(pending.album_artist,item.album_artist):esc(item.album_artist),year:pending.year!==undefined?pendingValue(pending.year,years):years,tracks:item.tracks.toLocaleString(),albums:item.albums.toLocaleString(),artists:item.artists.toLocaleString(),duration:fmtDuration(item.duration)};
+  return `<tr data-path="${esc(item.key)}" class="${state.selected.has(item.key)?"selected":""} ${item.queued_count?"queued":""}"><td class="check-col"><input type="checkbox" class="row-check" data-path="${esc(item.key)}" ${state.selected.has(item.key)?"checked":""} aria-label="Select ${esc(pending.label||item.label)}"></td>${visibleColumns().map(column=>`<td class="${column.id==="duration"?"duration-col":""}">${cells[column.id]}</td>`).join("")}<td class="row-fill" aria-hidden="true"></td></tr>`;
 }
 function syncSelection(){
   if(!state.selected.has(state.selectionAnchor)||!state.items.some(item=>rowKey(item)===state.selectionAnchor))state.selectionAnchor=null;
@@ -672,7 +735,7 @@ document.addEventListener("keydown",event=>{
   if(!$("#toast").classList.contains("hidden")){$("#toast").classList.add("hidden");event.preventDefault()}
 });
 $("#logout-button").addEventListener("click",async()=>{await api("/api/logout",{});location.reload()});
-$("#scan-button").addEventListener("click",async()=>{state.folderScope=null;try{const data=await api("/api/scan",{});toast(data.state==="queued"?"Scan queued":"Scan started");showView("activity")}catch(error){toast(error.message)}});
+$("#scan-button").addEventListener("click",async()=>{state.folderScope=null;state.artworkIndexAttempted?.clear();try{const data=await api("/api/scan",{});toast(data.state==="queued"?"Scan queued":"Scan started");showView("activity")}catch(error){toast(error.message)}});
 $("#add-folder").addEventListener("click",()=>folderPicker());$("#empty-add").addEventListener("click",()=>folderPicker());
 $("#configure-columns").addEventListener("click",showColumnSettings);
 $("#folder-list").addEventListener("click",async event=>{const remove=event.target.closest("[data-remove]");if(remove){event.stopPropagation();if(confirm(`Remove ${remove.dataset.remove} from the index? Files will not be deleted.`)){try{await api("/api/roots/remove",{path:remove.dataset.remove});state.root="";resetFilteredSelection();await Promise.all([refreshRoots(),loadQueue()]);await refreshFilteredTracks()}catch(error){toast(error.message)}}return}const node=event.target.closest("[data-root]");if(node){state.root=node.dataset.root;resetFilteredSelection();$("#root-filter").value=state.root;await refreshRoots();showView("library")}});

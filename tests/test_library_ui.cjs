@@ -135,3 +135,100 @@ test("a one-track group supplies the existing single-track editor its file recor
   assert.equal(a.run('state.knownTracks.get("a").tags.title'),"Song");
   assert.equal(a.run('opened[0].paths.join(",")'),"a");
 });
+
+test("mismatched artwork in incompatible views shows guidance without fetching items",async()=>{
+  const a=app();
+  a.context.fetch=()=>{throw new Error("Should not fetch an incompatible view")};
+  for(const view of ["artists","genres","decades","years"]){
+    a.run(`state.libraryView=${JSON.stringify(view)};state.trackFilter="mismatched_artwork";state.items=[{key:"old"}]`);
+    await a.run("refreshTracks()");
+    assert.equal(a.run('state.items.length'),0);
+    assert.equal(a.run('$("#empty-state h3").textContent'),"Choose a compatible view");
+    assert.match(a.run('$("#empty-state p").textContent'),/Tracks and Albums/);
+    assert.equal(a.run('$("#empty-state > div").textContent'),"ⓘ");
+  }
+});
+
+test("ordinary empty messages use the current view and reset the compatibility symbol",()=>{
+  const a=app();
+  for(const view of ["tracks","albums","artists","genres","decades","years"]){
+    a.run(`state.libraryView=${JSON.stringify(view)};state.trackFilter="all";renderEmptyState()`);
+    assert.equal(a.run('$("#empty-state h3").textContent'),`No ${view} here`);
+    assert.notEqual(a.run('$("#empty-state > div").textContent'),"ⓘ");
+  }
+});
+
+test("album rows use a shared cover and the default thumbnail for mixed or absent covers",()=>{
+  const a=app();
+  a.run('state.libraryView="albums";loadColumnSettings();var row={key:"album",label:"Album",album_artist:"Artist",first_year:2000,last_year:2000,tracks:2,albums:1,artists:1,duration:300,queued_count:0,artwork_path:"/music/a & b.mp3",artwork_mtime_ns:123}');
+  const shared=a.run('groupRowMarkup(row)');
+  assert.match(shared,/<img src="\/api\/art\/image\?/);
+  assert.match(shared,/version=123/);
+  assert.match(shared,/alt=""/);
+  const mixed=a.run('groupRowMarkup({...row,artwork_path:null})');
+  assert.doesNotMatch(mixed,/<img/);
+  assert.match(mixed,/art-thumb.*♫/);
+});
+
+test("switching filters during artwork refresh discards completion",async()=>{
+  const a=app(),pending=deferred();
+  a.run('state.libraryView="albums"');
+  a.context.fetch=()=>pending.promise;
+  const refreshing=a.run('refreshArtworkIndex()');
+  assert.equal(a.run('state.artworkIndexLoading'),true);
+  a.run('resetFilteredSelection();state.libraryView="artists";state.trackFilter="mismatched_artwork"');
+  pending.resolve({ok:true,json:async()=>({job:null})});
+  await refreshing;
+  assert.equal(a.run('state.artworkIndexLoading'),false);
+  assert.equal(a.run('state.items.length'),0);
+});
+
+test("track rows show queued values with saved-value hints without mutating indexed tags",()=>{
+  const a=app();
+  a.run('state.libraryView="tracks";loadColumnSettings();var track={path:"/music/a.mp3",relative_path:"a.mp3",tags:{title:"Saved title",artist:"Saved artist",album:"Saved album",track:"1",disc:"1"},format:"MP3",duration:120,artwork:false};setQueue([{path:track.path,edits:{title:"New <title>",artist:"New artist",album:"New album",track:"2",disc:"3"},revision:"one"}])');
+  const markup=a.run('trackRowMarkup(track)');
+  assert.match(markup,/New &lt;title&gt;/);
+  assert.match(markup,/New artist/);
+  assert.match(markup,/New album/);
+  assert.match(markup,/Saved: Saved title/);
+  assert.equal((markup.match(/class="pending-field"/g)||[]).length,5);
+  assert.equal(a.run('track.tags.title'),"Saved title");
+  a.run('setQueue([])');
+  const restored=a.run('trackRowMarkup(track)');
+  assert.match(restored,/Saved title/);
+  assert.doesNotMatch(restored,/pending-field|New artist/);
+});
+
+test("cleared track fields show the filename or empty indicator and deletion retains saved values",()=>{
+  const a=app();
+  a.run('state.libraryView="tracks";loadColumnSettings();var track={path:"/music/a.mp3",relative_path:"a.mp3",tags:{title:"Saved title",artist:"Artist"},format:"MP3",duration:120,artwork:false};setQueue([{path:track.path,edits:{title:"",artist:""},revision:"one"}])');
+  assert.match(a.run('trackRowMarkup(track)'),/a.mp3<span class="pending-field"/);
+  assert.match(a.run('trackRowMarkup(track)'),/—<span class="pending-field"/);
+  a.run('setQueue([{path:track.path,operation:"delete",edits:{title:"Wrong"},revision:"two"}])');
+  const deleted=a.run('trackRowMarkup(track)');
+  assert.match(deleted,/Saved title/);
+  assert.match(deleted,/Queued deletion/);
+  assert.doesNotMatch(deleted,/Wrong|pending-field/);
+});
+
+test("queued track artwork uses a revision-specific authenticated image URL",()=>{
+  const a=app();
+  a.run('state.libraryView="tracks";loadColumnSettings();var track={path:"/music/a & b.mp3",relative_path:"a & b.mp3",tags:{title:"Title"},format:"MP3",duration:120,artwork:false};setQueue([{path:track.path,edits:{},artwork_id:"art",revision:"new-revision"}])');
+  const markup=a.run('trackRowMarkup(track)');
+  assert.match(markup,/\/api\/queue\/art\/image\?/);
+  assert.match(markup,/revision=new-revision/);
+  assert.match(markup,/Pending changes · Artwork/);
+});
+
+test("album row retains queued count and saved identity while showing pending fields and cover",()=>{
+  const a=app();
+  a.run('state.libraryView="albums";loadColumnSettings();var row={key:"saved-key",label:"Saved album",album_artist:"Artist",first_year:1999,last_year:1999,tracks:2,albums:1,artists:1,duration:300,queued_count:2,pending:{label:"New album",album_artist:"New artist",year:"2025",artwork:{path:"/music/a.mp3",revision:"new",queued:true}}}');
+  const markup=a.run('groupRowMarkup(row)');
+  assert.match(markup,/New album/);
+  assert.match(markup,/New artist/);
+  assert.match(markup,/2025/);
+  assert.match(markup,/2 queued · Saved: Saved album/);
+  assert.match(markup,/data-path="saved-key"/);
+  assert.match(markup,/\/api\/queue\/art\/image\?/);
+  assert.equal((markup.match(/class="pending-field"/g)||[]).length,3);
+});
